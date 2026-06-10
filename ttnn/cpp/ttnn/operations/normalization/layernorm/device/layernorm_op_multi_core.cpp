@@ -191,7 +191,13 @@ tt::tt_metal::ProgramDescriptor LayerNormMultiCoreProgramFactory::create_descrip
 
     uint32_t num_tile_rows = NC * Ht;
 
-    CoreRangeSet requested_cores = core_range_set.has_value() ? core_range_set.value() : default_core_range(device);
+    CoreRangeSet requested_cores = core_range_set.has_value()
+                                       ? core_range_set.value()
+                                       : operation_attributes.sub_device_id.has_value()
+                                             ? device->worker_cores(
+                                                   tt::tt_metal::HalProgrammableCoreType::TENSIX,
+                                                   operation_attributes.sub_device_id.value())
+                                             : default_core_range(device);
 
     // Use split_work_to_cores to properly distribute tile rows across available cores
     auto

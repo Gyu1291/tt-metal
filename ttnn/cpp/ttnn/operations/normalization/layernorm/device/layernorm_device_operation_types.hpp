@@ -23,6 +23,7 @@ struct LayerNormParams {
     DeviceComputeKernelConfig compute_kernel_config;
     std::optional<DataType> dtype;
     std::optional<operations::unary::UnaryWithParam> fused_activation;
+    std::optional<tt::tt_metal::SubDeviceId> sub_device_id;
 };
 
 struct LayerNormInputs {

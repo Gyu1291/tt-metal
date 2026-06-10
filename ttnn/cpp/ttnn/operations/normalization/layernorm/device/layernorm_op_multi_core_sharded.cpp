@@ -38,7 +38,14 @@ tt::tt_metal::ProgramDescriptor LayerNormShardedProgramFactory::create_descripto
     const auto& input_shard_spec = tensor_args.input.shard_spec();
     TT_FATAL(input_shard_spec.has_value(), "Sharded layernorm requires input tensor to have a shard spec");
 
-    if (core_range_set.has_value()) {
+    IDevice* device = tensor_args.input.device();
+    std::optional<CoreRangeSet> resolved_core_range_set = core_range_set;
+    if (!resolved_core_range_set.has_value() && operation_attributes.sub_device_id.has_value()) {
+        resolved_core_range_set =
+            device->worker_cores(tt::tt_metal::HalProgrammableCoreType::TENSIX, operation_attributes.sub_device_id.value());
+    }
+
+    if (resolved_core_range_set.has_value()) {
         const auto& shard_grid = input_shard_spec.value().grid;
         // Verify that all cores in the shard spec are within the provided core_range_set
         for (const auto& shard_core_range : shard_grid.ranges()) {
@@ -46,7 +53,7 @@ tt::tt_metal::ProgramDescriptor LayerNormShardedProgramFactory::create_descripto
                 for (auto y = shard_core_range.start_coord.y; y <= shard_core_range.end_coord.y; ++y) {
                     CoreCoord core = {x, y};
                     TT_FATAL(
-                        core_range_set.value().contains(core),
+                        resolved_core_range_set.value().contains(core),
                         "Sharded tensor shard spec core ({}, {}) is not within the provided core_range_set. "
                         "The sharded tensor must lie entirely within the input core range.",
                         x,
@@ -100,7 +107,7 @@ tt::tt_metal::ProgramDescriptor LayerNormShardedProgramFactory::create_descripto
     ////////////////////////////////////////////////////////////////////////////
     //                            Device Setup
     ////////////////////////////////////////////////////////////////////////////
-    IDevice* device = a.device();
+    device = a.device();
 
     // convert data format
     tt::DataFormat in_data_format = tt::tt_metal::datatype_to_dataformat_converter(a.dtype());

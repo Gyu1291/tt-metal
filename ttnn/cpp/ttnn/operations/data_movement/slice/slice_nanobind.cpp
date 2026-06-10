@@ -31,7 +31,8 @@ ttnn::Tensor slice_small_vector_wrapper(
     const std::optional<ttnn::MemoryConfig>& memory_config,
     const std::optional<Tensor>& optional_output_tensor,
     const std::optional<float>& pad_value,
-    const std::optional<CoreRangeSet>&& sub_core_grids) {
+    const std::optional<CoreRangeSet>&& sub_core_grids,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id) {
     const auto step_value = step.value_or(ttnn::SmallVector<int>(slice_end.size(), 1));
     return ttnn::slice(
         input_tensor,
@@ -41,7 +42,8 @@ ttnn::Tensor slice_small_vector_wrapper(
         memory_config,
         optional_output_tensor,
         pad_value,
-        sub_core_grids);
+        sub_core_grids,
+        sub_device_id);
 }
 
 }  // namespace
@@ -60,6 +62,7 @@ void bind_slice(nb::module_& mod) {
             memory_config: Memory Config of the output tensor
             pad_value: Optional value to fill padding for tiled tensors. Padding values are unmodified (and undefined) by default
             sub_core_grids: (ttnn.CoreRangeSet, optional): Sub core grids. Defaults to `None`.
+            sub_device_id: (ttnn.SubDeviceId, optional): Sub-device whose TENSIX worker cores should run the slice. Mutually exclusive with sub_core_grids. Defaults to `None`.
 
         Returns:
             ttnn.Tensor: the output tensor.
@@ -82,7 +85,8 @@ void bind_slice(nb::module_& mod) {
                 const std::optional<float>&,
                 const std::optional<uint32_t>&,
                 const std::optional<uint32_t>&,
-                const std::optional<CoreRangeSet>&>(&ttnn::slice<uint32_t>),
+                const std::optional<CoreRangeSet>&,
+                const std::optional<tt::tt_metal::SubDeviceId>&>(&ttnn::slice<uint32_t>),
             nb::arg("input_tensor"),
             nb::arg("starts"),
             nb::arg("ends"),
@@ -93,7 +97,8 @@ void bind_slice(nb::module_& mod) {
             nb::arg("pad_value") = nb::none(),
             nb::arg("slice_dim") = nb::none(),
             nb::arg("num_devices") = nb::none(),
-            nb::arg("sub_core_grids") = nb::none()),
+            nb::arg("sub_core_grids") = nb::none(),
+            nb::arg("sub_device_id") = nb::none()),
         // Overload 2: std::array version (uint32_t template parameter, size 4)
         ttnn::overload_t(
             nb::overload_cast<
@@ -104,7 +109,8 @@ void bind_slice(nb::module_& mod) {
                 const std::optional<MemoryConfig>&,
                 const std::optional<Tensor>&,
                 const std::optional<float>&,
-                const std::optional<CoreRangeSet>&>(&ttnn::slice<uint32_t, 4>),
+                const std::optional<CoreRangeSet>&,
+                const std::optional<tt::tt_metal::SubDeviceId>&>(&ttnn::slice<uint32_t, 4>),
             nb::arg("input_tensor"),
             nb::arg("starts"),
             nb::arg("ends"),
@@ -113,7 +119,8 @@ void bind_slice(nb::module_& mod) {
             nb::arg("memory_config") = nb::none(),
             nb::arg("output_tensor") = nb::none(),
             nb::arg("pad_value") = nb::none(),
-            nb::arg("sub_core_grids") = nb::none()),
+            nb::arg("sub_core_grids") = nb::none(),
+            nb::arg("sub_device_id") = nb::none()),
         // Overload 3: SmallVector<int> version (int32_t template parameter)
         ttnn::overload_t(
             &slice_small_vector_wrapper,
@@ -125,7 +132,8 @@ void bind_slice(nb::module_& mod) {
             nb::arg("memory_config") = nb::none(),
             nb::arg("output_tensor") = nb::none(),
             nb::arg("pad_value") = nb::none(),
-            nb::arg("sub_core_grids") = nb::none()));
+            nb::arg("sub_core_grids") = nb::none(),
+            nb::arg("sub_device_id") = nb::none()));
 }
 void bind_slice_descriptor(nb::module_& mod) {
     nb::class_<ttnn::prim::SliceParams>(mod, "SliceParams")

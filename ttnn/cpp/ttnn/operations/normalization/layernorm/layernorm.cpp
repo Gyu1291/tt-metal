@@ -27,7 +27,8 @@ Tensor layer_norm(
     const std::optional<MemoryConfig>& memory_config,
     const std::optional<const prim::LayerNormProgramConfig>& program_config,
     const std::optional<const DeviceComputeKernelConfig> compute_kernel_config,
-    const std::optional<const Tensor>& recip_tensor) {
+    const std::optional<const Tensor>& recip_tensor,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id) {
     auto output_memory_config = memory_config.value_or(input_tensor.memory_config());
     auto rank = input_tensor.logical_shape().rank();
 
@@ -59,7 +60,9 @@ Tensor layer_norm(
         prim::LayerNormType::LAYERNORM,                    // norm_type
         prim::DistributedLayerNormStage::NOT_DISTRIBUTED,  // distributed_norm_stage
         std::nullopt,                                      // stats
-        recip_tensor);
+        recip_tensor,
+        std::nullopt,  // fused_activation
+        sub_device_id);
 }
 
 }  // namespace ttnn

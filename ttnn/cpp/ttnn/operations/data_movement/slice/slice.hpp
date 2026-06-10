@@ -17,7 +17,8 @@ ttnn::Tensor slice(
     const std::optional<MemoryConfig>& memory_config_arg = std::nullopt,
     const std::optional<Tensor>& optional_output_tensor = std::nullopt,
     const std::optional<float>& pad_value = std::nullopt,
-    const std::optional<CoreRangeSet>& sub_core_grids = std::nullopt);
+    const std::optional<CoreRangeSet>& sub_core_grids = std::nullopt,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id = std::nullopt);
 
 template <typename T>
 ttnn::Tensor slice(
@@ -28,7 +29,8 @@ ttnn::Tensor slice(
     const std::optional<MemoryConfig>& memory_config_arg = std::nullopt,
     const std::optional<Tensor>& optional_output_tensor = std::nullopt,
     const std::optional<float>& pad_value = std::nullopt,
-    const std::optional<CoreRangeSet>& sub_core_grids = std::nullopt) {
+    const std::optional<CoreRangeSet>& sub_core_grids = std::nullopt,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id = std::nullopt) {
     return slice(
         input_tensor,
         ttsl::Span<const T>(begins),
@@ -37,7 +39,8 @@ ttnn::Tensor slice(
         memory_config_arg,
         optional_output_tensor,
         pad_value,
-        sub_core_grids);
+        sub_core_grids,
+        sub_device_id);
 }
 
 template <typename T, std::size_t N>
@@ -49,7 +52,8 @@ ttnn::Tensor slice(
     const std::optional<MemoryConfig>& memory_config_arg = std::nullopt,
     const std::optional<Tensor>& optional_output_tensor = std::nullopt,
     const std::optional<float>& pad_value = std::nullopt,
-    const std::optional<CoreRangeSet>& sub_core_grids = std::nullopt);
+    const std::optional<CoreRangeSet>& sub_core_grids = std::nullopt,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id = std::nullopt);
 
 template <typename T>
 ttnn::Tensor slice(
@@ -62,6 +66,7 @@ ttnn::Tensor slice(
     const std::optional<float>& pad_value = std::nullopt,
     const std::optional<uint32_t>& slice_dim = std::nullopt,
     const std::optional<uint32_t>& num_devices = std::nullopt,
-    const std::optional<CoreRangeSet>& sub_core_grids = std::nullopt);
+    const std::optional<CoreRangeSet>& sub_core_grids = std::nullopt,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id = std::nullopt);
 
 }  // namespace ttnn

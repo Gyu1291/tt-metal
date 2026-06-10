@@ -12,6 +12,29 @@
 
 namespace ttnn {
 
+namespace {
+
+std::optional<CoreRangeSet> resolve_slice_sub_core_grids(
+    const ttnn::Tensor& input_tensor,
+    const std::optional<CoreRangeSet>& sub_core_grids,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id) {
+    TT_FATAL(
+        !(sub_core_grids.has_value() && sub_device_id.has_value()),
+        "ttnn::slice received both sub_core_grids and sub_device_id; provide only one");
+
+    if (!sub_device_id.has_value()) {
+        return sub_core_grids;
+    }
+
+    TT_FATAL(
+        input_tensor.storage_type() == StorageType::DEVICE && input_tensor.device() != nullptr,
+        "ttnn::slice sub_device_id requires an input tensor on device");
+
+    return input_tensor.device()->worker_cores(tt::tt_metal::HalProgrammableCoreType::TENSIX, sub_device_id.value());
+}
+
+}  // namespace
+
 template <typename T>
 ttnn::Tensor slice(
     const ttnn::Tensor& input_tensor,
@@ -21,8 +44,10 @@ ttnn::Tensor slice(
     const std::optional<MemoryConfig>& memory_config_arg,
     const std::optional<Tensor>& optional_output_tensor,
     const std::optional<float>& pad_value,
-    const std::optional<CoreRangeSet>& sub_core_grids) {
+    const std::optional<CoreRangeSet>& sub_core_grids,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id) {
     // Ensure start and end vectors have matching sizes and correct tensor rank
+    auto resolved_sub_core_grids = resolve_slice_sub_core_grids(input_tensor, sub_core_grids, sub_device_id);
 
     const auto& input_shape = input_tensor.logical_shape();
     uint32_t input_rank = input_shape.rank();
@@ -231,7 +256,7 @@ ttnn::Tensor slice(
         std::nullopt,
         std::nullopt,
         std::nullopt,
-        sub_core_grids,
+        resolved_sub_core_grids,
         optional_output_tensor);
     res = ttnn::experimental::view(res, actual_shape, final_padded_shape);
 
@@ -255,12 +280,21 @@ ttnn::Tensor slice(
     const std::optional<MemoryConfig>& memory_config_arg,
     const std::optional<Tensor>& optional_output_tensor,
     const std::optional<float>& pad_value,
-    const std::optional<CoreRangeSet>& sub_core_grids) {
+    const std::optional<CoreRangeSet>& sub_core_grids,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id) {
     ttsl::Span<const T> start(output_tensor_start.begin(), output_tensor_start.end());
     ttsl::Span<const T> end(output_tensor_end.begin(), output_tensor_end.end());
     ttsl::Span<const T> step_vec(step.begin(), step.end());
     return ttnn::slice<T>(
-        input_tensor, start, end, step_vec, memory_config_arg, optional_output_tensor, pad_value, sub_core_grids);
+        input_tensor,
+        start,
+        end,
+        step_vec,
+        memory_config_arg,
+        optional_output_tensor,
+        pad_value,
+        sub_core_grids,
+        sub_device_id);
 }
 
 template <typename T>
@@ -274,7 +308,10 @@ ttnn::Tensor slice(
     const std::optional<float>& pad_value,
     const std::optional<uint32_t>& slice_dim,
     const std::optional<uint32_t>& num_devices,
-    const std::optional<CoreRangeSet>& sub_core_grids) {
+    const std::optional<CoreRangeSet>& sub_core_grids,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id) {
+    auto resolved_sub_core_grids = resolve_slice_sub_core_grids(input_tensor, sub_core_grids, sub_device_id);
+
     TT_FATAL(
         output_tensor_start.logical_shape().rank() == 1,
         "The start tensor for slicing must be in 1D shape, but got {}D",
@@ -345,7 +382,7 @@ ttnn::Tensor slice(
             end_opt,
             slice_dim,
             num_devices,
-            sub_core_grids,
+            resolved_sub_core_grids,
             optional_output_tensor);
         return res;
     }  // convert the Tensor to Vector
@@ -367,7 +404,8 @@ ttnn::Tensor slice(
         memory_config_arg,
         optional_output_tensor,
         pad_value,
-        sub_core_grids);
+        resolved_sub_core_grids,
+        std::nullopt);
 }
 
 // Template instantiations for ttnn::slice
@@ -379,7 +417,8 @@ template ttnn::Tensor slice<int32_t>(
     const std::optional<MemoryConfig>& memory_config_arg,
     const std::optional<Tensor>& optional_output_tensor,
     const std::optional<float>& pad_value,
-    const std::optional<CoreRangeSet>& sub_core_grids);
+    const std::optional<CoreRangeSet>& sub_core_grids,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id);
 
 template ttnn::Tensor slice<uint32_t>(
     const ttnn::Tensor& input_tensor,
@@ -389,7 +428,8 @@ template ttnn::Tensor slice<uint32_t>(
     const std::optional<MemoryConfig>& memory_config_arg,
     const std::optional<Tensor>& optional_output_tensor,
     const std::optional<float>& pad_value,
-    const std::optional<CoreRangeSet>& sub_core_grids);
+    const std::optional<CoreRangeSet>& sub_core_grids,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id);
 
 // Template instantiations for std::array version
 template ttnn::Tensor slice<uint32_t, 4>(
@@ -400,7 +440,8 @@ template ttnn::Tensor slice<uint32_t, 4>(
     const std::optional<MemoryConfig>& memory_config_arg,
     const std::optional<Tensor>& optional_output_tensor,
     const std::optional<float>& pad_value,
-    const std::optional<CoreRangeSet>& sub_core_grids);
+    const std::optional<CoreRangeSet>& sub_core_grids,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id);
 
 // Template instantiations for Tensor version
 template ttnn::Tensor slice<uint32_t>(
@@ -413,6 +454,7 @@ template ttnn::Tensor slice<uint32_t>(
     const std::optional<float>& pad_value,
     const std::optional<uint32_t>& slice_dim,
     const std::optional<uint32_t>& num_devices,
-    const std::optional<CoreRangeSet>& sub_core_grids);
+    const std::optional<CoreRangeSet>& sub_core_grids,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id);
 
 }  // namespace ttnn
