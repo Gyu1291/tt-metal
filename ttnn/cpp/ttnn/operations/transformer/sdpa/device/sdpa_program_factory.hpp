@@ -18,6 +18,7 @@ struct SDPASharedVariables {
     tt::tt_metal::KernelHandle writer_kernels_id{};
     tt::tt_metal::KernelHandle compute_kernels_id{};
     tt::tt_metal::CoreCoord grid_size;
+    tt::tt_metal::CoreCoord grid_start;
     uint32_t num_cores = 0;
     bool is_chunked = false;
     uint32_t q_chunk_size = 0;

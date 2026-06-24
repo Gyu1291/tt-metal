@@ -76,12 +76,25 @@ static ProgramDescriptor create_program_batch_sharded_descriptor(
     tt::DataFormat output_data_format,
     bool untilize_out,
     bool skip_compute,
-    bool skip_write_back) {
+    bool skip_write_back,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id) {
     tt_metal::NOC in1_noc = tt::tt_metal::detail::preferred_noc_for_dram_read(device->arch());
 
     std::vector<CoreCoord> all_worker_cores_ordered;
     CoreRangeSet all_worker_cores;
-    get_optimal_dram_bank_to_reader_assignment(device, all_worker_cores_ordered, all_worker_cores, in1_noc);
+    if (sub_device_id.has_value()) {
+        all_worker_cores =
+            device->worker_cores(tt::tt_metal::HalProgrammableCoreType::TENSIX, sub_device_id.value());
+        auto bbox = all_worker_cores.bounding_box();
+        TT_FATAL(
+            all_worker_cores.num_cores() == bbox.size(),
+            "Batched DRAM-sharded matmul requires rectangular sub-device worker grids. Got {} (bounding box: {})",
+            all_worker_cores,
+            bbox);
+        all_worker_cores_ordered = corerange_to_cores(all_worker_cores, std::nullopt, true);
+    } else {
+        get_optimal_dram_bank_to_reader_assignment(device, all_worker_cores_ordered, all_worker_cores, in1_noc);
+    }
 
     // Input / output storage core ordering
     std::vector<CoreCoord> input_storage_cores_ordered =
@@ -721,7 +734,8 @@ ProgramDescriptor MatmulMultiCoreReuseBatchedHSDRAMShardedProgramFactory::create
         output_data_format,
         untilize_out,
         false,   // skip_compute
-        false);  // skip_write_back
+        false,   // skip_write_back
+        operation_attributes.sub_device_id);
 }
 
 }  // namespace ttnn::prim

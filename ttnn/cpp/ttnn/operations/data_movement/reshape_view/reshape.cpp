@@ -69,6 +69,22 @@ static bool has_inner_2d_tile_padding(const ttnn::Shape& shape) {
     return (shape[-1] % tt::constants::TILE_WIDTH != 0) || (shape[-2] % tt::constants::TILE_HEIGHT != 0);
 }
 
+static std::optional<CoreRangeSet> resolve_reshape_sub_core_grid(
+    const ttnn::Tensor& tensor,
+    const std::optional<CoreRangeSet>& sub_core_grid,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id) {
+    TT_FATAL(
+        !(sub_core_grid.has_value() && sub_device_id.has_value()),
+        "ttnn::reshape received both sub_core_grids and sub_device_id; provide only one");
+
+    if (!sub_device_id.has_value()) {
+        return sub_core_grid;
+    }
+
+    TT_FATAL(tensor.storage_type() == StorageType::DEVICE, "ttnn::reshape sub_device_id requires a device tensor");
+    return tensor.device()->worker_cores(tt::tt_metal::HalProgrammableCoreType::TENSIX, sub_device_id.value());
+}
+
 // Returns a sharded output MemoryConfig, or INTERLEAVED if no valid grid exists.
 // Callers must check is_sharded() before calling interleaved_to_sharded.
 //
@@ -511,7 +527,10 @@ ttnn::Tensor ttnn::reshape(
     const std::optional<PadValue>& pad_value,
     const TileReshapeMapMode reshape_map_mode,
     const std::optional<CoreRangeSet>& sub_core_grid,
-    const bool skip_padding_fill) {
+    const bool skip_padding_fill,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id) {
+    auto resolved_sub_core_grid =
+        operations::data_movement::detail::resolve_reshape_sub_core_grid(tensor, sub_core_grid, sub_device_id);
     MemoryConfig mem_config = memory_config.value_or(tensor.memory_config());
     const bool explicit_memory_config = memory_config.has_value();
     auto layout = tensor.layout();
@@ -590,7 +609,7 @@ ttnn::Tensor ttnn::reshape(
             tile_second_dim,
             mem_config,
             pad_value.value_or(default_pad_value),
-            sub_core_grid);
+            resolved_sub_core_grid);
     }
     // Preserve whether the caller explicitly passed pad_value. value_or(default_pad_value) below
     // collapses that signal, but reshape_tiled needs it to gate the default-off fill for non-BF8.
@@ -601,7 +620,7 @@ ttnn::Tensor ttnn::reshape(
         mem_config,
         pad_value.value_or(default_pad_value),
         reshape_map_mode == TileReshapeMapMode::RECREATE,
-        sub_core_grid,
+        resolved_sub_core_grid,
         explicit_memory_config,
         skip_padding_fill,
         pad_value_explicit);
@@ -614,8 +633,10 @@ ttnn::Tensor ttnn::reshape(
     const std::optional<PadValue>& pad_value,
     const TileReshapeMapMode reshape_map_mode,
     const std::optional<CoreRangeSet>& sub_core_grid,
-    const bool skip_padding_fill) {
-    return reshape(tensor, shape, shape, memory_config, pad_value, reshape_map_mode, sub_core_grid, skip_padding_fill);
+    const bool skip_padding_fill,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id) {
+    return reshape(
+        tensor, shape, shape, memory_config, pad_value, reshape_map_mode, sub_core_grid, skip_padding_fill, sub_device_id);
 }
 
 ttnn::Tensor ttnn::reshape(
@@ -625,7 +646,8 @@ ttnn::Tensor ttnn::reshape(
     const std::optional<PadValue>& pad_value,
     const TileReshapeMapMode reshape_map_mode,
     const std::optional<CoreRangeSet>& sub_core_grid,
-    const bool skip_padding_fill) {
+    const bool skip_padding_fill,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id) {
     return reshape(
         tensor,
         operations::data_movement::detail::infer_dims_for_reshape(tensor, shape_vector),
@@ -633,5 +655,6 @@ ttnn::Tensor ttnn::reshape(
         pad_value,
         reshape_map_mode,
         sub_core_grid,
-        skip_padding_fill);
+        skip_padding_fill,
+        sub_device_id);
 }

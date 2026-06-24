@@ -16,6 +16,7 @@ struct EmbeddingParams {
     bool tilized = false;
     EmbeddingsType embeddings_type = EmbeddingsType::GENERIC;
     std::optional<uint32_t> pad_token;
+    std::optional<tt::tt_metal::SubDeviceId> sub_device_id;
 };
 
 struct EmbeddingInputs {

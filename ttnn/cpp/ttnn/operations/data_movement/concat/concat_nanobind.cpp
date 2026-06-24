@@ -31,6 +31,7 @@ void bind_concat(nb::module_& mod) {
 
         Keyword Args:
             sub_core_grids (ttnn.CoreRangeSet, optional): Sub-core grid to use for interleaved (L1 or DRAM) output tensors. If provided, the concatenation will run on the specified sub-core grid instead of the full compute grid. Defaults to `None`.
+            sub_device_id (ttnn.SubDeviceId, optional): Sub-device whose worker cores should be used for the concat operation. Defaults to `None`.
 
         Returns:
             ttnn.Tensor: the output tensor.
@@ -46,7 +47,8 @@ void bind_concat(nb::module_& mod) {
         nb::arg("memory_config") = nb::none(),
         nb::arg("output_tensor").noconvert() = nb::none(),
         nb::arg("groups") = 1,
-        nb::arg("sub_core_grids") = nb::none());
+        nb::arg("sub_core_grids") = nb::none(),
+        nb::arg("sub_device_id") = nb::none());
 }
 
 }  // namespace ttnn::operations::data_movement::detail

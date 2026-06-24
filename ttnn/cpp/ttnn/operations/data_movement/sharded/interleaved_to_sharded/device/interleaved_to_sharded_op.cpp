@@ -5,10 +5,41 @@
 #include "interleaved_to_sharded_op.hpp"
 #include "ttnn/device_operation.hpp"
 #include <tt-metalium/hal.hpp>
+#include <tt-metalium/work_split.hpp>
 #include <ttnn/operation.hpp>
 #include "ttnn/tensor/tensor_ops.hpp"
 
 namespace ttnn::prim {
+
+namespace {
+
+tt::tt_metal::MemoryConfig map_allocation_memory_config_to_subdevice(
+    const Tensor& input_tensor,
+    const tt::tt_metal::MemoryConfig& memory_config,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id) {
+    if (!sub_device_id.has_value() || !memory_config.is_sharded() || !memory_config.shard_spec().has_value()) {
+        return memory_config;
+    }
+
+    const auto shard_spec = memory_config.shard_spec().value();
+    const uint32_t num_cores = shard_spec.grid.num_cores();
+    auto* device = input_tensor.device();
+    const auto sub_device_cores =
+        device->worker_cores(tt::tt_metal::HalProgrammableCoreType::TENSIX, sub_device_id.value());
+    TT_FATAL(
+        sub_device_cores.num_cores() >= num_cores,
+        "Sub-device has {} worker cores, but sharded memory config requires {} cores",
+        sub_device_cores.num_cores(),
+        num_cores);
+
+    const bool row_wise = shard_spec.orientation == tt::tt_metal::ShardOrientation::ROW_MAJOR;
+    const auto selected_cores = corerange_to_cores(sub_device_cores, num_cores, row_wise);
+    const tt::tt_metal::CoreRangeSet selected_core_ranges{ttsl::Span<const tt::tt_metal::CoreCoord>(selected_cores)};
+    const tt::tt_metal::ShardSpec remapped_shard_spec(selected_core_ranges, shard_spec.shape, shard_spec.orientation);
+    return memory_config.with_shard_spec(remapped_shard_spec);
+}
+
+}  // namespace
 
 std::pair<bool, std::string> InterleavedToShardedDeviceOperation::validate_inputs(
     const operation_attributes_t& operation_attributes, const tensor_args_t& tensor_args) {
@@ -135,6 +166,11 @@ InterleavedToShardedDeviceOperation::tensor_return_value_t InterleavedToShardedD
 
     const auto& input_tensor = tensor_args.input_tensor;
     auto spec = compute_output_specs(operation_attributes, tensor_args);
+    const auto allocation_mem_config = map_allocation_memory_config_to_subdevice(
+        input_tensor, operation_attributes.output_mem_config, operation_attributes.sub_device_id);
+    if (allocation_mem_config != operation_attributes.output_mem_config) {
+        return create_device_tensor(spec, input_tensor.device(), allocation_mem_config);
+    }
     return create_device_tensor(spec, input_tensor.device());
 }
 
@@ -145,6 +181,7 @@ ttsl::hash::hash_t InterleavedToShardedDeviceOperation::compute_program_hash(
         operation_attributes.output_mem_config,
         operation_attributes.output_dtype,
         operation_attributes.keep_l1_aligned,
+        operation_attributes.sub_device_id,
         input_tensor.dtype(),
         input_tensor.memory_config(),
         input_tensor.layout(),
@@ -156,9 +193,10 @@ Tensor interleaved_to_sharded(
     const tt::tt_metal::MemoryConfig& output_mem_config,
     const tt::tt_metal::DataType& output_dtype,
     bool keep_l1_aligned,
-    const std::optional<Tensor>& preallocated_output) {
+    const std::optional<Tensor>& preallocated_output,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id) {
     return ttnn::device_operation::launch<InterleavedToShardedDeviceOperation>(
-        InterleavedToShardedParams{output_mem_config, output_dtype, keep_l1_aligned},
+        InterleavedToShardedParams{output_mem_config, output_dtype, keep_l1_aligned, sub_device_id},
         InterleavedToShardedInputs{input_tensor, preallocated_output});
 }
 }  // namespace ttnn::prim

@@ -32,6 +32,7 @@ void py_module(nb::module_& mod) {
             layout (ttnn.Layout): the layout of the output tensor. Defaults to `ttnn.ROW_MAJOR_LAYOUT`.
             embeddings_type (ttnn.EmbeddingsType): the type of embeddings. Defaults to `ttnn._ttnn.operations.embedding.EmbeddingsType.GENERIC`.
             dtype (ttnn.DataType, optional): the data type for the output tensor. Defaults to `None`.
+            sub_device_id (ttnn.SubDeviceId, optional): Sub-device to execute the operation on. Defaults to `None`.
 
         Returns:
             ttnn.Tensor: the output tensor of layout == layout or layout of the weights tensor.
@@ -49,7 +50,8 @@ void py_module(nb::module_& mod) {
         nb::arg("embeddings_type").noconvert() = nb::cast(ttnn::prim::EmbeddingsType::GENERIC),
         nb::arg("dtype").noconvert() = nb::none(),
         nb::arg("memory_config") = nb::none(),
-        nb::arg("output_tensor").noconvert() = nb::none());
+        nb::arg("output_tensor").noconvert() = nb::none(),
+        nb::arg("sub_device_id") = nb::none());
 }
 
 }  // namespace ttnn::operations::embedding

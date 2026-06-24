@@ -461,6 +461,11 @@ class FastOperation:
         elif "cq_id" in function_kwargs:
             cq_id = function_kwargs.pop("cq_id")
 
+        for hook in PRE_OPERATION_HOOKS:
+            hook_return_value = hook(self, function_args, function_kwargs)
+            if hook_return_value is not None:
+                raise RuntimeError(f"Pre-operation hook {hook} returned {hook_return_value} but must return None")
+
         recording = ttnn.graph.is_python_io_recording_enabled()
         if recording:
             ttnn.graph.track_function_start(self.python_fully_qualified_name)

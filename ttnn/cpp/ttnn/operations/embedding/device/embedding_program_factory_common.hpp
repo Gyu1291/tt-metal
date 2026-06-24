@@ -8,6 +8,9 @@
 #include "ttnn/operations/core/core.hpp"
 #include "embedding_device_operation.hpp"
 #include "ttnn/operations/math.hpp"
+#include <optional>
+#include <vector>
+#include <tt-metalium/device.hpp>
 #include <tt-metalium/host_api.hpp>
 #include <tt-metalium/constants.hpp>
 #include <tt-metalium/work_split.hpp>
@@ -24,4 +27,16 @@ struct CoreSplitResult {
 };
 
 CoreSplitResult split_work_to_cores_aligned(CoreCoord grid_size, uint32_t units_to_divide, uint32_t alignment);
+CoreSplitResult split_embedding_work_to_cores(
+    tt::tt_metal::IDevice* device,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id,
+    CoreCoord grid_size,
+    uint32_t units_to_divide,
+    bool row_wise = false);
+CoreSplitResult split_embedding_work_to_cores_aligned(
+    tt::tt_metal::IDevice* device,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id,
+    CoreCoord grid_size,
+    uint32_t units_to_divide,
+    uint32_t alignment);
 }  // namespace ttnn::prim

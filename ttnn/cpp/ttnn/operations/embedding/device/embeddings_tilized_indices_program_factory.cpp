@@ -53,10 +53,9 @@ EmbeddingsTilizedIndicesProgramFactory::cached_program_t EmbeddingsTilizedIndice
     uint32_t problem_size = volume;
 
     auto compute_with_storage_grid_size = device->compute_with_storage_grid_size();
-    uint32_t num_cores_x = compute_with_storage_grid_size.x;
-    uint32_t num_cores_y = compute_with_storage_grid_size.y;
 
-    CoreSplitResult work = split_work_to_cores_aligned(compute_with_storage_grid_size, problem_size, FACE_HEIGHT);
+    CoreSplitResult work = split_embedding_work_to_cores_aligned(
+        device, operation_attributes.sub_device_id, compute_with_storage_grid_size, problem_size, FACE_HEIGHT);
 
     uint32_t num_cores = work.required_cores;
     CoreRangeSet all_cores = work.all_cores;
@@ -148,7 +147,7 @@ EmbeddingsTilizedIndicesProgramFactory::cached_program_t EmbeddingsTilizedIndice
     uint32_t col_offset = 0;
     uint32_t weight_offset = 0;
 
-    auto cores = grid_to_cores(num_cores, num_cores_x, num_cores_y, false);
+    auto cores = corerange_to_cores(all_cores, num_cores, false);
     std::vector<uint32_t> reader_runtime_args = {
         (std::uint32_t)a.buffer()->address(),
         (std::uint32_t)weights.buffer()->address(),

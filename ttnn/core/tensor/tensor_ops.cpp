@@ -83,6 +83,51 @@ Tensor create_device_tensor(
 
     return output;
 }
+
+Tensor create_device_tensor(
+    const TensorSpec& tensor_spec,
+    distributed::MeshDevice* mesh_device,
+    const MemoryConfig& allocation_memory_config,
+    std::optional<SubDeviceId> sub_device_id,
+    std::optional<TensorTopology> tensor_topology) {
+    GraphTracker::instance().track_function_start(
+        "tt::tt_metal::create_device_tensor",
+        tensor_spec.logical_shape(),
+        tensor_spec.tensor_layout().get_data_type(),
+        tensor_spec.tensor_layout().get_layout(),
+        mesh_device,
+        tensor_spec.tensor_layout().get_memory_config());
+
+    auto topology = std::invoke([&]() {
+        if (tensor_topology.has_value()) {
+            return std::move(*tensor_topology);
+        }
+        const auto& mesh_shape = mesh_device->shape();
+        ttsl::SmallVector<distributed::MeshMapperConfig::Placement> placements(
+            mesh_shape.dims(), tt::tt_metal::distributed::MeshMapperConfig::Replicate{});
+
+        std::vector<distributed::MeshCoordinate> coordinates;
+        coordinates.reserve(mesh_shape.mesh_size());
+        for (const auto& coord : distributed::MeshCoordinateRange(mesh_shape)) {
+            coordinates.push_back(coord);
+        }
+
+        return TensorTopology{mesh_shape, placements, std::move(coordinates)};
+    });
+
+    const auto allocation_tensor_layout = TensorLayout(
+        tensor_spec.tensor_layout().get_data_type(),
+        tensor_spec.tensor_layout().get_page_config(),
+        allocation_memory_config);
+    const auto allocation_tensor_spec = TensorSpec(tensor_spec.logical_shape(), allocation_tensor_layout);
+    auto output = Tensor(
+        MeshTensor::allocate_on_device(*mesh_device, tensor_spec, topology, allocation_tensor_spec, sub_device_id));
+    output = tt::tt_metal::set_tensor_id(output);
+
+    GraphTracker::instance().track_function_end(output);
+
+    return output;
+}
 }  // namespace tt::tt_metal
 
 namespace tt::tt_metal {

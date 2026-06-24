@@ -5,7 +5,6 @@
 #include "ttnn/operation.hpp"
 #include "device/interleaved_to_sharded_op.hpp"
 #include "interleaved_to_sharded.hpp"
-#include <tt-metalium/work_split.hpp>
 
 using namespace tt::tt_metal;
 
@@ -16,13 +15,15 @@ ttnn::Tensor interleaved_to_sharded(
     const MemoryConfig& sharded_memory_config,
     const std::optional<DataType>& data_type_arg,
     const std::optional<bool>& keep_l1_aligned,
-    const std::optional<Tensor>& preallocated_output) {
+    const std::optional<Tensor>& preallocated_output,
+    const std::optional<SubDeviceId>& sub_device_id) {
     return ttnn::prim::interleaved_to_sharded(
         input_tensor,
         sharded_memory_config,
         data_type_arg.value_or(input_tensor.dtype()),
         keep_l1_aligned.value_or(false),
-        preallocated_output);
+        preallocated_output,
+        sub_device_id);
 }
 
 ttnn::Tensor interleaved_to_sharded(
@@ -32,7 +33,8 @@ ttnn::Tensor interleaved_to_sharded(
     const TensorMemoryLayout shard_scheme,
     const ShardOrientation shard_orientation,
     const std::optional<DataType>& data_type_arg,
-    const std::optional<bool>& keep_l1_aligned) {
+    const std::optional<bool>& keep_l1_aligned,
+    const std::optional<SubDeviceId>& sub_device_id) {
     bool row_wise = shard_orientation == ShardOrientation::ROW_MAJOR;
     CoreCoord grid_size;
     CoreRangeSet grid_set;
@@ -69,7 +71,9 @@ ttnn::Tensor interleaved_to_sharded(
         input_tensor,
         sharded_mem_config,
         data_type_arg.value_or(input_tensor.dtype()),
-        keep_l1_aligned.value_or(false));
+        keep_l1_aligned.value_or(false),
+        std::nullopt,
+        sub_device_id);
 }
 
 }  // namespace ttnn

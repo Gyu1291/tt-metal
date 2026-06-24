@@ -9,12 +9,31 @@
 
 namespace ttnn::operations::copy::detail {
 
+std::optional<CoreRangeSet> resolve_typecast_sub_core_grids(
+    const Tensor& input_tensor,
+    const std::optional<CoreRangeSet>& sub_core_grids,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id) {
+    TT_FATAL(
+        !(sub_core_grids.has_value() && sub_device_id.has_value()),
+        "ttnn::typecast received both sub_core_grids and sub_device_id; provide only one");
+
+    if (!sub_device_id.has_value()) {
+        return sub_core_grids;
+    }
+
+    TT_FATAL(input_tensor.storage_type() == StorageType::DEVICE, "ttnn::typecast sub_device_id requires a device tensor");
+    return input_tensor.device()->worker_cores(tt::tt_metal::HalProgrammableCoreType::TENSIX, sub_device_id.value());
+}
+
 inline Tensor typecast_impl(
     const Tensor& input_tensor,
     const DataType& output_dtype,
     const std::optional<MemoryConfig>& memory_config = std::nullopt,
     const std::optional<Tensor>& optional_output_tensor = std::nullopt,
-    const std::optional<CoreRangeSet>& sub_core_grids = std::nullopt) {
+    const std::optional<CoreRangeSet>& sub_core_grids = std::nullopt,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id = std::nullopt) {
+    auto resolved_sub_core_grids = resolve_typecast_sub_core_grids(input_tensor, sub_core_grids, sub_device_id);
+
     // Handle host tensors by delegating to to_dtype
     if (is_cpu_tensor(input_tensor)) {
         TT_FATAL(
@@ -22,7 +41,7 @@ inline Tensor typecast_impl(
             "Preallocated output tensor is not supported for host tensor typecast. "
             "Use to_dtype directly if you need this functionality.");
         TT_FATAL(
-            !sub_core_grids.has_value(),
+            !resolved_sub_core_grids.has_value(),
             "sub_core_grids is not supported for host tensor typecast (only applicable to device operations).");
         // For host tensors, memory_config is not applicable, so we ignore it
         return ttnn::to_dtype(input_tensor, output_dtype);
@@ -51,7 +70,7 @@ inline Tensor typecast_impl(
         preserve_fp32_precision,
         bfp8_pack_precise,
         optional_output_tensor,
-        sub_core_grids);
+        resolved_sub_core_grids);
 }
 
 }  // namespace ttnn::operations::copy::detail
@@ -63,7 +82,8 @@ Tensor typecast(
     const DataType& output_dtype,
     const std::optional<MemoryConfig>& memory_config_arg,
     const std::optional<Tensor>& optional_output_tensor,
-    const std::optional<CoreRangeSet>& sub_core_grids) {
+    const std::optional<CoreRangeSet>& sub_core_grids,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id) {
     if (optional_output_tensor.has_value()) {
         TT_FATAL(
             output_dtype == optional_output_tensor.value().dtype(),
@@ -71,7 +91,7 @@ Tensor typecast(
     }
 
     return operations::copy::detail::typecast_impl(
-        input, output_dtype, memory_config_arg, optional_output_tensor, sub_core_grids);
+        input, output_dtype, memory_config_arg, optional_output_tensor, sub_core_grids, sub_device_id);
 }
 
 Tensor typecast(
@@ -80,7 +100,8 @@ Tensor typecast(
     const DataType& tt_output_dtype,
     const std::optional<MemoryConfig>& memory_config,
     const std::optional<Tensor>& optional_output_tensor,
-    const std::optional<CoreRangeSet>& sub_core_grids) {
+    const std::optional<CoreRangeSet>& sub_core_grids,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id) {
     TT_FATAL(tt_input_dtype == input_tensor.dtype(), "input dtype and input tensor's dtype provided should match");
     if (optional_output_tensor.has_value()) {
         TT_FATAL(
@@ -88,7 +109,7 @@ Tensor typecast(
             "If both output dtype and output tensor provided dtype should match");
     }
     return operations::copy::detail::typecast_impl(
-        input_tensor, tt_output_dtype, memory_config, optional_output_tensor, sub_core_grids);
+        input_tensor, tt_output_dtype, memory_config, optional_output_tensor, sub_core_grids, sub_device_id);
 }
 
 }  // namespace ttnn

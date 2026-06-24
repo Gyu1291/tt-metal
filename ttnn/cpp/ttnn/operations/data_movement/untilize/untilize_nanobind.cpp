@@ -31,6 +31,7 @@ void bind_untilize(nb::module_& mod) {
                 memory_config (ttnn.MemoryConfig, optional): Memory configuration for the operation. Defaults to `None`.
                 use_multicore (bool, optional): Whether to use multicore. Defaults to `True`.
                 sub_core_grids (ttnn.CoreRangeSet, optional): Sub core grids. Defaults to `None`.
+                sub_device_id (ttnn.SubDeviceId, optional): Sub-device id used to derive sub core grids. Defaults to `None`.
 
             Returns:
                 List of ttnn.Tensor: the output tensor.
@@ -44,6 +45,7 @@ void bind_untilize(nb::module_& mod) {
         nb::kw_only(),
         nb::arg("memory_config") = nb::none(),
         nb::arg("use_multicore") = true,
-        nb::arg("sub_core_grids") = nb::none());
+        nb::arg("sub_core_grids") = nb::none(),
+        nb::arg("sub_device_id") = nb::none());
 }
 }  // namespace ttnn::operations::data_movement::detail

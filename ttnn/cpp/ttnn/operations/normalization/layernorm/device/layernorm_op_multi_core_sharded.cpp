@@ -46,7 +46,7 @@ tt::tt_metal::ProgramDescriptor LayerNormShardedProgramFactory::create_descripto
     }
 
     if (resolved_core_range_set.has_value()) {
-        const auto& shard_grid = input_shard_spec.value().grid;
+        const auto shard_grid = tensor_args.input.buffer()->shard_spec().grid();
         // Verify that all cores in the shard spec are within the provided core_range_set
         for (const auto& shard_core_range : shard_grid.ranges()) {
             for (auto x = shard_core_range.start_coord.x; x <= shard_core_range.end_coord.x; ++x) {
@@ -146,11 +146,11 @@ tt::tt_metal::ProgramDescriptor LayerNormShardedProgramFactory::create_descripto
     auto core_ranges = CoreRanges::compute(grid, workers);
 
     // Get all storage cores
-    ShardSpec output_shard_spec = output.shard_spec().value();
+    ShardSpec output_shard_spec = output.buffer()->shard_spec().tensor_shard_spec;
     bool output_row_wise = output_shard_spec.orientation == ShardOrientation::ROW_MAJOR;
 
     CoreRangeSet all_storage_cores = output_shard_spec.grid;
-    CoreRangeSet all_worker_and_storage_cores = all_storage_cores.merge(a.shard_spec().value().grid);
+    CoreRangeSet all_worker_and_storage_cores = all_storage_cores.merge(a.buffer()->shard_spec().grid());
     std::vector<uint32_t> storage_core_noc_x;
     std::vector<uint32_t> storage_core_noc_y;
     std::vector<CoreCoord> storage_core_coords =

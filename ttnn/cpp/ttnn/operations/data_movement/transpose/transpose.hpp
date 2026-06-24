@@ -14,8 +14,14 @@ ttnn::Tensor transpose(
     int64_t dim1,
     int64_t dim2,
     const std::optional<MemoryConfig>& memory_config_arg,
-    float pad_value = 0.0f);
+    float pad_value = 0.0f,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id = std::nullopt);
 
-ttnn::Tensor transpose(const ttnn::Tensor& input_tensor, int64_t dim1, int64_t dim2, float pad_value = 0.0f);
+ttnn::Tensor transpose(
+    const ttnn::Tensor& input_tensor,
+    int64_t dim1,
+    int64_t dim2,
+    float pad_value = 0.0f,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id = std::nullopt);
 
 }  // namespace ttnn

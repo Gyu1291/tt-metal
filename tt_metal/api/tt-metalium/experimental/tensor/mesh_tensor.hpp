@@ -5,12 +5,14 @@
 #pragma once
 
 #include <tt-metalium/hal_types.hpp>
+#include <tt-metalium/sub_device_types.hpp>
 
 #include <tt-metalium/experimental/tensor/tensor_types.hpp>
 #include <tt-metalium/experimental/tensor/spec/tensor_spec.hpp>
 #include <tt-metalium/experimental/tensor/topology/tensor_topology.hpp>
 
 #include <tt_stl/optional_reference.hpp>
+#include <optional>
 
 // It is intentional to not reflect the experimental status of this header in its namespace,
 // as most of the code movements are based on implementations in TTNN that are well tested and production ready for a
@@ -61,6 +63,12 @@ public:
      */
     static MeshTensor allocate_on_device(
         distributed::MeshDevice& mesh_device, const TensorSpec& spec, const TensorTopology& topology);
+    static MeshTensor allocate_on_device(
+        distributed::MeshDevice& mesh_device,
+        const TensorSpec& spec,
+        const TensorTopology& topology,
+        const TensorSpec& allocation_spec,
+        std::optional<SubDeviceId> sub_device_id = std::nullopt);
 
     // Internal Constructor for transition.
     explicit MeshTensor(std::shared_ptr<distributed::MeshBuffer> mesh_buffer, TensorSpec spec, TensorTopology topology);

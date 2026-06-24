@@ -324,7 +324,31 @@ SDPAProgramFactory::cached_program_t SDPAProgramFactory::create(
                                                      : device->compute_with_storage_grid_size();
     const bool exp_approx_mode = get_exp_approx_mode(program_config);
 
-    auto core_grid = CoreRange({0, 0}, {grid_size.x - 1, grid_size.y - 1});
+    CoreCoord grid_start = {0, 0};
+    if (operation_attributes.sub_device_id.has_value()) {
+        auto sub_device_cores = device->worker_cores(
+            tt::tt_metal::HalProgrammableCoreType::TENSIX, operation_attributes.sub_device_id.value());
+        auto bbox = sub_device_cores.bounding_box();
+        TT_FATAL(
+            sub_device_cores.num_cores() == bbox.size(),
+            "SDPA only supports rectangular sub-device worker grids. Got sub-device worker cores: {} "
+            "(bounding box: {})",
+            sub_device_cores,
+            bbox);
+        TT_FATAL(
+            bbox.start_coord.x + grid_size.x - 1 <= bbox.end_coord.x &&
+                bbox.start_coord.y + grid_size.y - 1 <= bbox.end_coord.y,
+            "SDPA grid_size {} anchored at sub-device start {} extends past the sub-device worker bounding box {}",
+            grid_size,
+            bbox.start_coord,
+            bbox);
+        grid_start = bbox.start_coord;
+    }
+
+    auto core_for_index = [&](uint32_t i) {
+        return CoreCoord{grid_start.x + (i % grid_size.x), grid_start.y + (i / grid_size.x)};
+    };
+    auto core_grid = CoreRange(grid_start, {grid_start.x + grid_size.x - 1, grid_start.y + grid_size.y - 1});
     uint32_t num_cores = grid_size.x * grid_size.y;
 
     TT_FATAL(
@@ -823,7 +847,7 @@ SDPAProgramFactory::cached_program_t SDPAProgramFactory::create(
 
         // First pass: Record work distribution for each core
         for (uint32_t i = 0; i < num_cores; ++i) {
-            CoreCoord core = {i % grid_size.x, i / grid_size.x};
+            CoreCoord core = core_for_index(i);
 
             auto& work = core_work[i];
             work.logical_core = core;
@@ -1305,7 +1329,7 @@ SDPAProgramFactory::cached_program_t SDPAProgramFactory::create(
 
     // Set reader rt args
     for (uint32_t i = 0; i < num_cores; ++i) {
-        CoreCoord core = {i % grid_size.x, i / grid_size.x};
+        CoreCoord core = core_for_index(i);
 
         // Global Q scheduling per-core range: contiguous slice of the flat (B, NQH, q_num_chunks) space.
         uint32_t global_q_start = i * global_q_base_chunks_per_core +
@@ -1399,6 +1423,7 @@ SDPAProgramFactory::cached_program_t SDPAProgramFactory::create(
             .writer_kernels_id = writer_kernels_id,
             .compute_kernels_id = compute_kernels_id,
             .grid_size = grid_size,
+            .grid_start = grid_start,
             .num_cores = num_cores,
             .is_chunked = is_chunked,
             .q_chunk_size = q_chunk_size,
@@ -1453,10 +1478,11 @@ void SDPAProgramFactory::override_runtime_arguments(
     auto& compute_args_by_core = GetRuntimeArgs(program, shared_vars.compute_kernels_id);
 
     const auto& grid_size = shared_vars.grid_size;
+    const auto& grid_start = shared_vars.grid_start;
     const auto num_cores = shared_vars.num_cores;
 
     for (uint32_t i = 0; i < num_cores; ++i) {
-        CoreCoord core = {i % grid_size.x, i / grid_size.x};
+        CoreCoord core = {grid_start.x + (i % grid_size.x), grid_start.y + (i / grid_size.x)};
 
         auto& reader_args = reader_args_by_core[core.x][core.y];
         auto& writer_args = writer_args_by_core[core.x][core.y];

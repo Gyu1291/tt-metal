@@ -41,6 +41,23 @@ using OwnedConcatArgs = std::tuple<std::vector<ttnn::Tensor>, int, unsigned int>
 using MassagedConcat = MassagedOperation<ttnn::Tensor, const std::vector<ttnn::Tensor>&, int, unsigned int>;
 using MassagedConcatParams = MassagedOperationParams<ttnn::Tensor, const std::vector<ttnn::Tensor>&, int, unsigned int>;
 
+std::optional<ttnn::CoreRangeSet> resolve_concat_sub_core_grids(
+    const std::vector<ttnn::Tensor>& input_tensors,
+    const std::optional<ttnn::CoreRangeSet>& sub_core_grids,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id) {
+    TT_FATAL(
+        !(sub_core_grids.has_value() && sub_device_id.has_value()),
+        "ttnn.concat received both sub_core_grids and sub_device_id; provide only one");
+    if (!sub_device_id.has_value()) {
+        return sub_core_grids;
+    }
+
+    TT_FATAL(!input_tensors.empty(), "ttnn.concat sub_device_id requires a non-empty tensor list");
+    const auto& input_tensor = input_tensors.front();
+    TT_FATAL(input_tensor.storage_type() == StorageType::DEVICE, "ttnn.concat sub_device_id requires a device tensor");
+    return input_tensor.device()->worker_cores(tt::tt_metal::HalProgrammableCoreType::TENSIX, sub_device_id.value());
+}
+
 // FIXME: this papers over an issue in pad, so we should probably move the
 // fix there.
 MassagedConcat build_unsqueeze_concat(int input_rank, const MemoryConfig& output_memory_config) {
@@ -266,9 +283,12 @@ ttnn::Tensor concat(
     const std::optional<MemoryConfig>& memory_config,
     const std::optional<ttnn::Tensor>& optional_output_tensor,
     unsigned int groups,
-    const std::optional<ttnn::CoreRangeSet>& sub_core_grids) {
+    const std::optional<ttnn::CoreRangeSet>& sub_core_grids,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id) {
     TT_FATAL(!input_tensors.empty(), "ttnn.concat: expected a non-empty list of Tensors!");
     TT_FATAL(!optional_output_tensor.has_value(), "optional output tensor currently unsupported!");
+    auto resolved_sub_core_grids =
+        ttnn::operations::data_movement::resolve_concat_sub_core_grids(input_tensors, sub_core_grids, sub_device_id);
     const auto mem_config =
         memory_config.value_or(ttnn::DRAM_MEMORY_CONFIG);  // should match input tensor memory config when unpopulated
                                                            // but causes CI errors for now
@@ -331,9 +351,10 @@ ttnn::Tensor concat(
 
     // For interleaved outputs, if sub_core_grids is provided, use direct path to avoid massaged operations
     // which don't currently support sub_core_grids
-    if (sub_core_grids.has_value() && !first_tensor.is_sharded() &&
+    if (resolved_sub_core_grids.has_value() && !first_tensor.is_sharded() &&
         (mem_config.memory_layout() == TensorMemoryLayout::INTERLEAVED)) {
-        return ttnn::operations::data_movement::concat_impl(input_tensors, dim, groups, mem_config, sub_core_grids);
+        return ttnn::operations::data_movement::concat_impl(
+            input_tensors, dim, groups, mem_config, resolved_sub_core_grids);
     }
 
     auto untilize_rm_retilize_concat =
@@ -348,6 +369,23 @@ ttnn::Tensor concat(
     const std::vector<ttnn::Tensor>& itensors(input_tensors);
     auto res = massaged_concat(itensors, dim, groups);
     return res;
+}
+
+ttnn::Tensor concat(
+    const std::vector<ttnn::Tensor>& input_tensors,
+    int dim,
+    const std::optional<MemoryConfig>& memory_config,
+    const std::optional<ttnn::Tensor>& optional_output_tensor,
+    unsigned int groups,
+    const std::optional<ttnn::CoreRangeSet>& sub_core_grids) {
+    return ttnn::concat(
+        input_tensors,
+        dim,
+        memory_config,
+        optional_output_tensor,
+        groups,
+        sub_core_grids,
+        /*sub_device_id=*/std::nullopt);
 }
 
 }  // namespace ttnn

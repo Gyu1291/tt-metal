@@ -22,6 +22,7 @@ Tensor to_memory_config(
     const Tensor& tensor,
     const MemoryConfig& memory_config,
     std::optional<DataType> dtype = std::nullopt,
-    const std::optional<Tensor>& output_tensor = std::nullopt);
+    const std::optional<Tensor>& output_tensor = std::nullopt,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id = std::nullopt);
 
 }  // namespace ttnn

@@ -15,6 +15,7 @@ struct TransposeParams {
     TransposeOpDim dim{};
     tt::tt_metal::MemoryConfig output_mem_config;
     float pad_value = 0.0f;
+    std::optional<tt::tt_metal::SubDeviceId> sub_device_id;
 };
 
 struct TransposeInputs {

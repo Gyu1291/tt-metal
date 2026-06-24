@@ -13,6 +13,7 @@ struct InterleavedToShardedParams {
     tt::tt_metal::MemoryConfig output_mem_config;
     tt::tt_metal::DataType output_dtype{tt::tt_metal::DataType::INVALID};
     bool keep_l1_aligned{};
+    std::optional<tt::tt_metal::SubDeviceId> sub_device_id;
 };
 
 struct InterleavedToShardedInputs {

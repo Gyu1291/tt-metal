@@ -28,7 +28,8 @@ inline Tensor transpose_(
     const Tensor& a,
     ttnn::prim::TransposeOpDim transpose_dim,
     const std::optional<MemoryConfig>& output_mem_config,
-    float pad_value = 0.0f) {
+    float pad_value = 0.0f,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id = std::nullopt) {
     MemoryConfig output_mem_constructed;
     if (!output_mem_config.has_value() ||
         (output_mem_config.value().is_sharded() && !output_mem_config.value().shard_spec().has_value())) {
@@ -156,7 +157,7 @@ inline Tensor transpose_(
             break;
         default: break;
     }
-    return ttnn::prim::transpose(a, transpose_dim, output_mem_constructed, pad_value);
+    return ttnn::prim::transpose(a, transpose_dim, output_mem_constructed, pad_value, sub_device_id);
 }
 
 ttnn::Tensor transpose_nd(
@@ -190,7 +191,8 @@ ttnn::Tensor transpose_impl(
     int64_t dim1,
     int64_t dim2,
     const std::optional<MemoryConfig>& memory_config_arg,
-    float pad_value = 0.0f) {
+    float pad_value = 0.0f,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id = std::nullopt) {
     {
         const bool rm = input_tensor.layout() == Layout::ROW_MAJOR;
         const bool in_bad = rm && detail::is_block_or_width_sharded_mc(input_tensor.memory_config());
@@ -199,10 +201,11 @@ ttnn::Tensor transpose_impl(
         if (in_bad || out_bad) {
             const auto interleaved_l1 =
                 tt::tt_metal::MemoryConfig(tt::tt_metal::TensorMemoryLayout::INTERLEAVED, tt::tt_metal::BufferType::L1);
-            Tensor x = in_bad ? ttnn::to_memory_config(input_tensor, interleaved_l1, std::nullopt) : input_tensor;
+            Tensor x = in_bad ? ttnn::to_memory_config(input_tensor, interleaved_l1, std::nullopt, std::nullopt, sub_device_id)
+                              : input_tensor;
             const std::optional<MemoryConfig> intermediate_mc =
                 out_bad ? std::optional<MemoryConfig>(interleaved_l1) : memory_config_arg;
-            Tensor result = transpose_impl(x, dim1, dim2, intermediate_mc, pad_value);
+            Tensor result = transpose_impl(x, dim1, dim2, intermediate_mc, pad_value, sub_device_id);
             if (out_bad) {
                 // Synthesize a shard_spec for shard-spec-less sharded outputs so to_memory_config
                 // gets a fully-specified destination.
@@ -212,7 +215,7 @@ ttnn::Tensor transpose_impl(
                         result, result.padded_shape(), final_mc.memory_layout());
                     final_mc = final_mc.with_shard_spec(shard_spec);
                 }
-                result = ttnn::to_memory_config(result, final_mc, std::nullopt);
+                result = ttnn::to_memory_config(result, final_mc, std::nullopt, std::nullopt, sub_device_id);
             }
             return result;
         }
@@ -236,7 +239,9 @@ ttnn::Tensor transpose_impl(
     bool cn = (normalized_dim1 == 0 && normalized_dim2 == 1) || (normalized_dim2 == 0 && normalized_dim1 == 1);
     bool bfloat8_supported = cn || wh;
     bool typecast = input_unsqueezed.dtype() == DataType::BFLOAT8_B and !bfloat8_supported;
-    Tensor input_typecasted = typecast ? ttnn::typecast(input_unsqueezed, DataType::BFLOAT16) : input_unsqueezed;
+    Tensor input_typecasted =
+        typecast ? ttnn::typecast(input_unsqueezed, DataType::BFLOAT16, std::nullopt, std::nullopt, std::nullopt, sub_device_id)
+                 : input_unsqueezed;
 
     TT_FATAL(normalized_dim1 <= 3, "dimension has to be 0-3 only corresponding to N,C,H,W");
     TT_FATAL(normalized_dim2 <= 3, "dimension has to be 0-3 only corresponding to N,C,H,W");
@@ -275,10 +280,11 @@ ttnn::Tensor transpose_impl(
         } else {
             TT_ASSERT(false, "Unsupported transpose dims");
         }
-        output = detail::transpose_(input_typecasted, transpose_dim, memory_config_arg, pad_value);
+        output = detail::transpose_(input_typecasted, transpose_dim, memory_config_arg, pad_value, sub_device_id);
     }
     output = initial_rank < 4u ? ttnn::squeeze_from_4D(output, initial_rank) : output;
-    return typecast ? ttnn::typecast(output, DataType::BFLOAT8_B) : output;
+    return typecast ? ttnn::typecast(output, DataType::BFLOAT8_B, std::nullopt, std::nullopt, std::nullopt, sub_device_id)
+                    : output;
 }
 
 }  // namespace ttnn::operations::data_movement::transpose
@@ -290,12 +296,19 @@ ttnn::Tensor transpose(
     int64_t dim1,
     int64_t dim2,
     const std::optional<MemoryConfig>& memory_config,
-    float pad_value) {
-    return operations::data_movement::transpose::transpose_impl(input_tensor, dim1, dim2, memory_config, pad_value);
+    float pad_value,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id) {
+    return operations::data_movement::transpose::transpose_impl(
+        input_tensor, dim1, dim2, memory_config, pad_value, sub_device_id);
 }
 
-ttnn::Tensor transpose(const ttnn::Tensor& input_tensor, int64_t dim1, int64_t dim2, float pad_value) {
-    return transpose(input_tensor, dim1, dim2, std::nullopt, pad_value);
+ttnn::Tensor transpose(
+    const ttnn::Tensor& input_tensor,
+    int64_t dim1,
+    int64_t dim2,
+    float pad_value,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id) {
+    return transpose(input_tensor, dim1, dim2, std::nullopt, pad_value, sub_device_id);
 }
 
 }  // namespace ttnn

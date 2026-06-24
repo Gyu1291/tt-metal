@@ -38,11 +38,33 @@ MassagedUntilize build_ndiml_untilize(BaseUntilizeType base_untilize) {
 
 namespace ttnn {
 
+namespace {
+
+std::optional<CoreRangeSet> resolve_untilize_sub_core_grids(
+    const Tensor& input_tensor,
+    const std::optional<CoreRangeSet>& sub_core_grids,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id) {
+    TT_FATAL(
+        !(sub_core_grids.has_value() && sub_device_id.has_value()),
+        "ttnn::untilize received both sub_core_grids and sub_device_id; provide only one");
+
+    if (!sub_device_id.has_value()) {
+        return sub_core_grids;
+    }
+
+    TT_FATAL(input_tensor.storage_type() == StorageType::DEVICE, "ttnn::untilize sub_device_id requires a device tensor");
+    return input_tensor.device()->worker_cores(tt::tt_metal::HalProgrammableCoreType::TENSIX, sub_device_id.value());
+}
+
+}  // namespace
+
 ttnn::Tensor untilize(
     const ttnn::Tensor& input_tensor,
     const std::optional<MemoryConfig>& memory_config,
     bool use_multicore,
-    const std::optional<CoreRangeSet>& sub_core_grids) {
+    const std::optional<CoreRangeSet>& sub_core_grids,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id) {
+    auto resolved_sub_core_grids = resolve_untilize_sub_core_grids(input_tensor, sub_core_grids, sub_device_id);
     bool fp32_dest_acc_en = input_tensor.dtype() == DataType::UINT32 || input_tensor.dtype() == DataType::FLOAT32;
 
     auto input_cb_data_format = tt::tt_metal::datatype_to_dataformat_converter(input_tensor.dtype());
@@ -66,7 +88,7 @@ ttnn::Tensor untilize(
             memory_config.value_or(input_tensor.memory_config()),
             use_multicore,
             fp32_dest_acc_en,
-            sub_core_grids,
+            resolved_sub_core_grids,
             enough_space_width,
             enough_space_height,
             pf_type);

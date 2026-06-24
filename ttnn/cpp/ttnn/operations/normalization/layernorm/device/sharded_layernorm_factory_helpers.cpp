@@ -109,7 +109,7 @@ uint32_t get_num_blocks(bool mcast_1d, bool row_wise, CoreCoord grid_size, const
 //////////////////////////////////////////////////////////////////////////////
 
 GridParams GridParams::compute(const Tensor& input, uint32_t block_ht, CoreCoord compute_with_storage_grid_size) {
-    auto spec = input.shard_spec().value();
+    auto spec = input.buffer()->shard_spec().tensor_shard_spec;
     const uint32_t tile_height = input.tensor_spec().tile().get_height();
     uint32_t M = input.physical_volume() / input.padded_shape()[-1];
     uint32_t block_h = block_ht * tile_height;

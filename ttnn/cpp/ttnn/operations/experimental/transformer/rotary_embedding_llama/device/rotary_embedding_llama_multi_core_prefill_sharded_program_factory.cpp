@@ -71,10 +71,13 @@ RotaryEmbeddingLlamaMultiCorePrefillSharded::cached_program_t RotaryEmbeddingLla
         get_compute_kernel_config_args(device->arch(), operation_attributes.compute_kernel_config);
 
     auto compute_with_storage_grid_size = device->compute_with_storage_grid_size();
-    uint32_t num_cores_x = compute_with_storage_grid_size.x;
-    uint32_t num_cores_y = compute_with_storage_grid_size.y;
-
-    CoreRange all_cores = CoreRange({0, 0}, {num_cores_x - 1, num_cores_y - 1});
+    CoreRangeSet all_cores = operation_attributes.sub_device_id.has_value()
+                                  ? device->worker_cores(
+                                        tt::tt_metal::HalProgrammableCoreType::TENSIX,
+                                        operation_attributes.sub_device_id.value())
+                                  : CoreRangeSet(CoreRange(
+                                        {0, 0},
+                                        {compute_with_storage_grid_size.x - 1, compute_with_storage_grid_size.y - 1}));
 
     bool in_sharded = input.shard_spec().has_value();
     std::optional<ShardSpec> shard_spec = in_sharded ? input.shard_spec() : output.shard_spec();
@@ -85,7 +88,7 @@ RotaryEmbeddingLlamaMultiCorePrefillSharded::cached_program_t RotaryEmbeddingLla
     bool row_major = true;
 
     // Parallelization
-    const uint32_t num_cores = num_cores_x * num_cores_y;
+    const uint32_t num_cores = all_cores.num_cores();
     const uint32_t batch_parallel_factor = std::min(batch, num_cores);
     const uint32_t seq_parallel_factor = std::min(num_cores / batch_parallel_factor, seq_len_t);
     const uint32_t batch_per_core = (batch + batch_parallel_factor - 1) / batch_parallel_factor;
@@ -153,8 +156,12 @@ RotaryEmbeddingLlamaMultiCorePrefillSharded::cached_program_t RotaryEmbeddingLla
             tt_metal::CreateCircularBuffer(program, all_cores, sin_cb_cfg);
         } else {
             const CoreRangeSet& cos_sin_shard_grid = cos.shard_spec()->grid;
+            TT_FATAL(
+                all_cores.subtract(cos_sin_shard_grid).empty(),
+                "rotary_embedding_llama sub_device_id requires HEIGHT_SHARDED cos/sin shard grid to cover all selected "
+                "sub-device cores");
             const bool partial_cos_sin = cos_sin_shard_grid.num_cores() < num_cores;
-            const auto& cos_sin_cb_cores = partial_cos_sin ? cos_sin_shard_grid : CoreRangeSet(all_cores);
+            const auto& cos_sin_cb_cores = partial_cos_sin ? cos_sin_shard_grid : all_cores;
 
             auto cos_cb_cfg = tt_metal::CircularBufferConfig(
                                   num_cos_sin_tiles * cos_single_tile_size, {{cos_cb_index, cos_cb_data_format}})
@@ -170,7 +177,7 @@ RotaryEmbeddingLlamaMultiCorePrefillSharded::cached_program_t RotaryEmbeddingLla
 
             // Cores outside the shard grid still need a CB defined (they won't run work).
             if (partial_cos_sin) {
-                CoreRangeSet remaining_cores = CoreRangeSet(all_cores).subtract(cos_sin_shard_grid);
+                CoreRangeSet remaining_cores = all_cores.subtract(cos_sin_shard_grid);
                 if (remaining_cores.num_cores() > 0) {
                     tt_metal::CreateCircularBuffer(
                         program,
@@ -213,8 +220,12 @@ RotaryEmbeddingLlamaMultiCorePrefillSharded::cached_program_t RotaryEmbeddingLla
     std::optional<CBHandle> cb_trans_mat_handle;
     if (trans_mat_use_global_cb) {
         const CoreRangeSet& tm_shard_grid = trans_mat.shard_spec()->grid;
+        TT_FATAL(
+            all_cores.subtract(tm_shard_grid).empty(),
+            "rotary_embedding_llama sub_device_id requires HEIGHT_SHARDED trans_mat shard grid to cover all selected "
+            "sub-device cores");
         const bool partial_tm = tm_shard_grid.num_cores() < num_cores;
-        const auto& tm_cb_cores = partial_tm ? tm_shard_grid : CoreRangeSet(all_cores);
+        const auto& tm_cb_cores = partial_tm ? tm_shard_grid : all_cores;
 
         auto tm_cb_cfg =
             tt_metal::CircularBufferConfig(
@@ -225,7 +236,7 @@ RotaryEmbeddingLlamaMultiCorePrefillSharded::cached_program_t RotaryEmbeddingLla
 
         // Cores outside the shard grid still need a CB defined (they won't run work).
         if (partial_tm) {
-            CoreRangeSet tm_remaining = CoreRangeSet(all_cores).subtract(tm_shard_grid);
+            CoreRangeSet tm_remaining = all_cores.subtract(tm_shard_grid);
             if (tm_remaining.num_cores() > 0) {
                 tt_metal::CreateCircularBuffer(
                     program,
@@ -350,7 +361,7 @@ RotaryEmbeddingLlamaMultiCorePrefillSharded::cached_program_t RotaryEmbeddingLla
             .compile_args = compute_kernel_args,
             .defines = kernel_defines});
 
-    const auto& cores = grid_to_cores(num_cores, num_cores_x, num_cores_y, row_major);
+    const auto& cores = corerange_to_cores(all_cores, std::nullopt, row_major);
 
     /*
         Overall loop iterations: # total cores

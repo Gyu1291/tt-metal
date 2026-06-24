@@ -240,13 +240,15 @@ ttnn::Tensor transpose(
     const Tensor& input_tensor,
     ttnn::prim::TransposeOpDim dim,
     const tt::tt_metal::MemoryConfig& output_mem_config,
-    float pad_value) {
+    float pad_value,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id) {
     using OperationType = ttnn::prim::TransposeDeviceOperation;
     return ttnn::device_operation::launch<OperationType>(
         OperationType::operation_attributes_t{
             .dim = dim,
             .output_mem_config = output_mem_config,
             .pad_value = pad_value,
+            .sub_device_id = sub_device_id,
         },
         TransposeInputs{
             .input = input_tensor,

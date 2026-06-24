@@ -8,6 +8,7 @@
 #include "ttnn/operations/core/core.hpp"
 #include "device/embedding_device_operation.hpp"
 #include "ttnn/operation.hpp"
+#include "ttnn/operations/data_movement/reshape_view/reshape.hpp"
 #include "ttnn/operations/data_movement/unsqueeze/unsqueeze.hpp"
 #include <ttnn/operations/copy/typecast/typecast.hpp>
 
@@ -21,7 +22,8 @@ ttnn::Tensor embedding(
     ttnn::prim::EmbeddingsType embeddings_type,
     const std::optional<const DataType> dtype,
     const std::optional<MemoryConfig>& memory_config,
-    const std::optional<Tensor>& optional_output_tensor) {
+    const std::optional<Tensor>& optional_output_tensor,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id) {
     if (pad_token.has_value()) {
         embeddings_type = ttnn::prim::EmbeddingsType::PADDED;
     }
@@ -39,7 +41,15 @@ ttnn::Tensor embedding(
     auto sentence_size = input_tensor.logical_shape()[-1];
     auto embedding_input_tensor = input_tensor;
     if (input_tensor.layout() == ttnn::ROW_MAJOR_LAYOUT) {
-        embedding_input_tensor = ttnn::reshape(input_tensor, ttnn::Shape({batch_size, 1, 1, sentence_size}));
+        embedding_input_tensor = ttnn::reshape(
+            input_tensor,
+            ttnn::Shape({batch_size, 1, 1, sentence_size}),
+            std::nullopt,
+            std::nullopt,
+            ttnn::TileReshapeMapMode::CACHE,
+            std::nullopt,
+            false,
+            sub_device_id);
     }
 
     // If layout is row major, OR if the input tensor is not a multiple of TILE_HEIGHT, then we cannot use tilized
@@ -65,16 +75,34 @@ ttnn::Tensor embedding(
         embeddings_type,
         memory_config,
         pad_token,
-        optional_output_tensor);
+        optional_output_tensor,
+        sub_device_id);
     // Don't include batch_size if there was none
     if (original_input_rank == 1) {
-        embeddings = ttnn::reshape(embeddings, Shape({sentence_size, hidden_embedding_dim}));
+        embeddings = ttnn::reshape(
+            embeddings,
+            Shape({sentence_size, hidden_embedding_dim}),
+            std::nullopt,
+            std::nullopt,
+            ttnn::TileReshapeMapMode::CACHE,
+            std::nullopt,
+            false,
+            sub_device_id);
     } else {
-        embeddings = ttnn::reshape(embeddings, Shape({batch_size, sentence_size, hidden_embedding_dim}));
+        embeddings = ttnn::reshape(
+            embeddings,
+            Shape({batch_size, sentence_size, hidden_embedding_dim}),
+            std::nullopt,
+            std::nullopt,
+            ttnn::TileReshapeMapMode::CACHE,
+            std::nullopt,
+            false,
+            sub_device_id);
     }
     embeddings = ttnn::to_layout(embeddings, layout.value_or(weight_arg.layout()));
     if (embeddings.layout() == ttnn::TILE_LAYOUT && embeddings.dtype() != dtype.value_or(weight.dtype())) {
-        embeddings = ttnn::typecast(embeddings, dtype.value_or(weight.dtype()));
+        embeddings = ttnn::typecast(
+            embeddings, dtype.value_or(weight.dtype()), std::nullopt, std::nullopt, std::nullopt, sub_device_id);
     }
     return embeddings;
 }

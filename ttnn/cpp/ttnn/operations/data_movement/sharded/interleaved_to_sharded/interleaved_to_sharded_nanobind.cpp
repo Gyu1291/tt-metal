@@ -67,7 +67,8 @@ void bind_interleaved_to_sharded(nb::module_& mod) {
                 TensorMemoryLayout,
                 tt::tt_metal::ShardOrientation,
                 const std::optional<ttnn::DataType>&,
-                const std::optional<bool>&>(&ttnn::interleaved_to_sharded),
+                const std::optional<bool>&,
+                const std::optional<tt::tt_metal::SubDeviceId>&>(&ttnn::interleaved_to_sharded),
             nb::arg("input_tensor").noconvert(),
             nb::arg("grid"),
             nb::arg("shard_shape"),
@@ -75,7 +76,8 @@ void bind_interleaved_to_sharded(nb::module_& mod) {
             nb::arg("shard_orientation"),
             nb::arg("output_dtype") = nb::none(),
             nb::kw_only(),
-            nb::arg("keep_l1_aligned") = false),
+            nb::arg("keep_l1_aligned") = false,
+            nb::arg("sub_device_id") = nb::none()),
 
         // Overload 2: Using MemoryConfig (simple)
         ttnn::overload_t(
@@ -84,13 +86,15 @@ void bind_interleaved_to_sharded(nb::module_& mod) {
                 const MemoryConfig&,
                 const std::optional<ttnn::DataType>&,
                 const std::optional<bool>&,
-                const std::optional<ttnn::Tensor>&>(&ttnn::interleaved_to_sharded),
+                const std::optional<ttnn::Tensor>&,
+                const std::optional<tt::tt_metal::SubDeviceId>&>(&ttnn::interleaved_to_sharded),
             nb::arg("input_tensor").noconvert(),
             nb::arg("sharded_memory_config"),
             nb::arg("output_dtype") = nb::none(),
             nb::kw_only(),
             nb::arg("keep_l1_aligned") = false,
-            nb::arg("preallocated_output") = nb::none()));
+            nb::arg("preallocated_output") = nb::none(),
+            nb::arg("sub_device_id") = nb::none()));
 }
 
 }  // namespace ttnn::operations::data_movement

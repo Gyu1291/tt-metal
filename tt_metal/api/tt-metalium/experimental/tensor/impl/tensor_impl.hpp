@@ -9,9 +9,11 @@
 #include <tt-metalium/mesh_buffer.hpp>
 #include <tt-metalium/mesh_device.hpp>
 #include <tt-metalium/host_buffer.hpp>
+#include <tt-metalium/sub_device_types.hpp>
 #include <tt-metalium/tilize_utils.hpp>
 
 #include <tt_stl/span.hpp>
+#include <optional>
 #include <vector>
 
 /**
@@ -29,6 +31,11 @@ namespace tt::tt_metal::tensor_impl {
 
 std::shared_ptr<distributed::MeshBuffer> allocate_device_buffer(
     distributed::MeshDevice* mesh_device, const TensorSpec& tensor_spec);
+std::shared_ptr<distributed::MeshBuffer> allocate_device_buffer(
+    distributed::MeshDevice* mesh_device,
+    const TensorSpec& tensor_spec,
+    const TensorSpec& allocation_tensor_spec,
+    std::optional<SubDeviceId> sub_device_id = std::nullopt);
 
 HostBuffer allocate_host_buffer(const TensorSpec& tensor_spec);
 

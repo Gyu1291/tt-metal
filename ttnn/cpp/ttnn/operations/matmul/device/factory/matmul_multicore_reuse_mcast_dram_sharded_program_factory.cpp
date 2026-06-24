@@ -73,7 +73,8 @@ static ProgramDescriptor create_program_dram_sharded_descriptor(
     bool skip_compute,
     bool skip_in0_mcast,
     bool skip_write_back,
-    bool row_broadcast_bias) {
+    bool row_broadcast_bias,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id) {
     using namespace tt;
 
     // currently only support transpose of the full tile
@@ -81,15 +82,26 @@ static ProgramDescriptor create_program_dram_sharded_descriptor(
     TT_FATAL(
         in1_buffer->shard_spec().orientation() == ShardOrientation::ROW_MAJOR, "Only ROW_MAJOR sharding is supported");
 
-    uint32_t start_core_x = 0;
-    uint32_t start_core_y = 0;
     auto compute_with_storage_grid_size = device->compute_with_storage_grid_size();
+    CoreCoord sub_device_start_core = {0, 0};
+    if (sub_device_id.has_value()) {
+        auto sub_device_cores =
+            device->worker_cores(tt::tt_metal::HalProgrammableCoreType::TENSIX, sub_device_id.value());
+        auto bbox = sub_device_cores.bounding_box();
+        TT_FATAL(
+            sub_device_cores.num_cores() == bbox.size(),
+            "DRAM-sharded matmul requires rectangular sub-device worker grids. Got {} (bounding box: {})",
+            sub_device_cores,
+            bbox);
+        sub_device_start_core = bbox.start_coord;
+        compute_with_storage_grid_size = bbox.grid_size();
+    }
     uint32_t num_mcast_cores = compute_with_storage_grid_size.x * compute_with_storage_grid_size.y;
 
-    CoreCoord top_left_core = {(std::size_t)start_core_x, (std::size_t)start_core_y};
+    CoreCoord top_left_core = sub_device_start_core;
     CoreCoord bottom_right_core = {
-        (std::size_t)start_core_x + compute_with_storage_grid_size.x - 1,
-        (std::size_t)start_core_y + compute_with_storage_grid_size.y - 1};
+        (std::size_t)sub_device_start_core.x + compute_with_storage_grid_size.x - 1,
+        (std::size_t)sub_device_start_core.y + compute_with_storage_grid_size.y - 1};
     auto top_left_core_physical = device->worker_core_from_logical_core(top_left_core);
     auto bottom_right_core_physical = device->worker_core_from_logical_core(bottom_right_core);
 
@@ -106,7 +118,13 @@ static ProgramDescriptor create_program_dram_sharded_descriptor(
     // get the dram readers
     std::vector<CoreCoord> all_worker_cores_ordered;
     CoreRangeSet all_worker_cores;
-    get_optimal_dram_bank_to_reader_assignment(device, all_worker_cores_ordered, all_worker_cores, in1_noc);
+    if (sub_device_id.has_value()) {
+        all_worker_cores =
+            device->worker_cores(tt::tt_metal::HalProgrammableCoreType::TENSIX, sub_device_id.value());
+        all_worker_cores_ordered = corerange_to_cores(all_worker_cores, std::nullopt, true);
+    } else {
+        get_optimal_dram_bank_to_reader_assignment(device, all_worker_cores_ordered, all_worker_cores, in1_noc);
+    }
 
     // dram banks
     uint32_t num_dram_banks = all_worker_cores_ordered.size();
@@ -931,8 +949,8 @@ ProgramDescriptor MatmulMultiCoreReuseMultiCastDRAMShardedProgramFactory::create
 
     TT_FATAL(
         a.shard_spec().has_value() && output.shard_spec().has_value(), "Both input A and output must have shard specs");
-    CoreRangeSet input_all_cores_storage = a.shard_spec().value().grid;
-    CoreRangeSet output_all_cores_storage = output.shard_spec().value().grid;
+    CoreRangeSet input_all_cores_storage = a.buffer()->shard_spec().grid();
+    CoreRangeSet output_all_cores_storage = output.buffer()->shard_spec().grid();
 
     uint32_t in0_single_tile_size = in0_tile.get_tile_size(in0_data_format);
     uint32_t in1_single_tile_size = in1_tile.get_tile_size(in1_data_format);
@@ -1037,7 +1055,8 @@ ProgramDescriptor MatmulMultiCoreReuseMultiCastDRAMShardedProgramFactory::create
         skip_compute,
         skip_in0_mcast,
         skip_write_back,
-        row_broadcast_bias);
+        row_broadcast_bias,
+        operation_attributes.sub_device_id);
 }
 
 }  // namespace ttnn::prim

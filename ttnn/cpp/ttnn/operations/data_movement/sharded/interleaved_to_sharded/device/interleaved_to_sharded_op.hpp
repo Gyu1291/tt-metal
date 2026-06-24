@@ -41,5 +41,6 @@ Tensor interleaved_to_sharded(
     const tt::tt_metal::MemoryConfig& output_mem_config,
     const tt::tt_metal::DataType& output_dtype,
     bool keep_l1_aligned,
-    const std::optional<Tensor>& preallocated_output = std::nullopt);
+    const std::optional<Tensor>& preallocated_output = std::nullopt,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id = std::nullopt);
 }  // namespace ttnn::prim

@@ -27,7 +27,8 @@ ttnn::Tensor pad(
     float value,
     bool use_multicore,
     const std::optional<MemoryConfig>& memory_config_arg = std::nullopt,
-    const std::optional<CoreRangeSet>& sub_core_grids = std::nullopt);
+    const std::optional<CoreRangeSet>& sub_core_grids = std::nullopt,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id = std::nullopt);
 
 ttnn::Tensor pad(
     const ttnn::Tensor& input_tensor,
@@ -35,7 +36,8 @@ ttnn::Tensor pad(
     float value,
     bool use_multicore = false,
     const std::optional<MemoryConfig>& memory_config_arg = std::nullopt,
-    const std::optional<CoreRangeSet>& sub_core_grids = std::nullopt);
+    const std::optional<CoreRangeSet>& sub_core_grids = std::nullopt,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id = std::nullopt);
 
 // legacy API
 ttnn::Tensor pad(
@@ -45,6 +47,7 @@ ttnn::Tensor pad(
     float value,
     bool use_multicore = false,
     const std::optional<MemoryConfig>& memory_config_arg = std::nullopt,
-    const std::optional<CoreRangeSet>& sub_core_grids = std::nullopt);
+    const std::optional<CoreRangeSet>& sub_core_grids = std::nullopt,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id = std::nullopt);
 
 }  // namespace ttnn

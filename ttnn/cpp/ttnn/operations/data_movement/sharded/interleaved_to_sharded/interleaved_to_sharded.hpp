@@ -14,7 +14,8 @@ ttnn::Tensor interleaved_to_sharded(
     const MemoryConfig& sharded_memory_config,
     const std::optional<DataType>& data_type_arg = std::nullopt,
     const std::optional<bool>& keep_l1_aligned = std::nullopt,
-    const std::optional<Tensor>& preallocated_output = std::nullopt);
+    const std::optional<Tensor>& preallocated_output = std::nullopt,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id = std::nullopt);
 
 ttnn::Tensor interleaved_to_sharded(
     const ttnn::Tensor& input_tensor,
@@ -23,6 +24,7 @@ ttnn::Tensor interleaved_to_sharded(
     TensorMemoryLayout shard_scheme,
     tt::tt_metal::ShardOrientation shard_orientation,
     const std::optional<DataType>& data_type_arg = std::nullopt,
-    const std::optional<bool>& keep_l1_aligned = std::nullopt);
+    const std::optional<bool>& keep_l1_aligned = std::nullopt,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id = std::nullopt);
 
 }  // namespace ttnn

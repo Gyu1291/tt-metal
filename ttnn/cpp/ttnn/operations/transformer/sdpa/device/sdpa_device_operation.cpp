@@ -398,7 +398,8 @@ ttsl::hash::hash_t SDPAOperation::compute_program_hash(const SDPAParams& attrs, 
         tensors.attn_mask,
         page_table_for_hash,
         tensors.attention_sink,
-        attrs.use_mla);
+        attrs.use_mla,
+        attrs.sub_device_id);
     return hash;
 }
 
@@ -461,7 +462,14 @@ SDPAOperation::create_op_performance_model(
 
     CoreCoord compute_grid_dims = args.program_config.has_value()
                                       ? args.program_config->compute_with_storage_grid_size
-                                      : output_tensor.device()->compute_with_storage_grid_size();
+                                      : args.sub_device_id.has_value()
+                                            ? output_tensor.device()
+                                                  ->worker_cores(
+                                                      tt::tt_metal::HalProgrammableCoreType::TENSIX,
+                                                      args.sub_device_id.value())
+                                                  .bounding_box()
+                                                  .grid_size()
+                                            : output_tensor.device()->compute_with_storage_grid_size();
     tt::tt_metal::MathFidelity math_fidelity = ttnn::get_math_fidelity(args.compute_kernel_config);
 
     int ideal_dev_clock_cycles = operations::transformer::sdpa::compute_sdpa_ideal_cycles(
@@ -500,7 +508,8 @@ Tensor sdpa(
     std::optional<uint32_t> head_dim_v,
     const tt::tt_metal::MemoryConfig& output_mem_config,
     std::optional<ttnn::operations::transformer::SDPAProgramConfig> program_config,
-    ttnn::DeviceComputeKernelConfig compute_kernel_config) {
+    ttnn::DeviceComputeKernelConfig compute_kernel_config,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id) {
     using OperationType = ttnn::prim::SDPAOperation;
     return ttnn::device_operation::launch<OperationType>(
         OperationType::operation_attributes_t{
@@ -514,6 +523,7 @@ Tensor sdpa(
             .use_mla = use_mla,
             .head_dim_v = head_dim_v,
             .sliding_window_size = sliding_window_size,
+            .sub_device_id = sub_device_id,
         },
         OperationType::tensor_args_t{
             .q = input_tensor_q,

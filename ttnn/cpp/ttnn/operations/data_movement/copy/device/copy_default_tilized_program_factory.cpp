@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "copy_device_operation.hpp"
+#include "copy_subdevice_work_split.hpp"
 
 #include <cmath>
 
@@ -32,7 +33,7 @@ constexpr const char* KERNEL_COMPUTE_ELTWISE_COPY =
 }  // namespace
 
 ProgramDescriptor CopyDeviceOperation::DefaultTilized::create_descriptor(
-    const operation_attributes_t& /*operation_attributes*/,
+    const operation_attributes_t& operation_attributes,
     const tensor_args_t& tensor_args,
     tensor_return_value_t& output_tensor) {
     const auto& input = tensor_args.input;
@@ -41,8 +42,7 @@ ProgramDescriptor CopyDeviceOperation::DefaultTilized::create_descriptor(
     ProgramDescriptor desc;
 
     auto* device = input.device();
-    auto compute_with_storage_grid_size =
-        device->compute_with_storage_grid_size();  // This can be replaced with get_worker_cores in subdevices
+    auto compute_with_storage_grid_size = device->compute_with_storage_grid_size();
 
     const auto& logical_shape = input.logical_shape();
     const auto& tile = input.tensor_spec().tile();
@@ -59,8 +59,10 @@ ProgramDescriptor CopyDeviceOperation::DefaultTilized::create_descriptor(
     for (uint32_t i = 0; i + 2 < rank; ++i) {
         total_tiles *= logical_shape[i];
     }
+    auto split_result =
+        split_copy_work_to_cores(device, operation_attributes.sub_device_id, compute_with_storage_grid_size, total_tiles);
     auto [num_cores, all_cores, core_group_1, core_group_2, num_tiles_per_core_group_1, num_tiles_per_core_group_2] =
-        tt::tt_metal::split_work_to_cores(compute_with_storage_grid_size, total_tiles);
+        split_result;
     std::vector<CoreCoord> ordered_cores = corerange_to_cores(all_cores, num_cores, true);
 
     // Configuring the CB that store input pages

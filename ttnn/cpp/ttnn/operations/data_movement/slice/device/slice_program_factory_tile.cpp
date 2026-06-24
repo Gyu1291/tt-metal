@@ -5,6 +5,7 @@
 #include "ttnn/operations/data_movement/slice/device/slice_device_operation.hpp"
 #include "ttnn/operations/data_movement/slice/device/slice_program_factory_tile.hpp"
 
+#include <algorithm>
 #include <optional>
 #include <tt-metalium/work_split.hpp>
 #include <tt-metalium/constants.hpp>
@@ -19,6 +20,29 @@ namespace ttnn::operations::data_movement {
 
 // Helper functions used by SliceTileProgramFactory
 namespace {
+
+CoreRangeSet get_active_slice_cores(const CoreRangeSet& sub_core_grids, uint32_t units_to_divide) {
+    const auto target_num_cores = std::min(units_to_divide, sub_core_grids.num_cores());
+    auto active_cores = corerange_to_cores(sub_core_grids, target_num_cores, true);
+    std::vector<CoreRange> active_core_ranges;
+    active_core_ranges.reserve(active_cores.size());
+    for (const auto& core : active_cores) {
+        active_core_ranges.emplace_back(core, core);
+    }
+    return CoreRangeSet(std::move(active_core_ranges));
+}
+
+std::tuple<uint32_t, CoreRangeSet, CoreRangeSet, CoreRangeSet, uint32_t, uint32_t> split_slice_work_to_cores(
+    const CoreCoord& compute_with_storage_grid_size,
+    const std::optional<CoreRangeSet>& sub_core_grids,
+    uint32_t units_to_divide) {
+    if (!sub_core_grids.has_value()) {
+        return tt::tt_metal::split_work_to_cores(compute_with_storage_grid_size, units_to_divide);
+    }
+
+    auto active_core_grids = get_active_slice_cores(sub_core_grids.value(), units_to_divide);
+    return tt::tt_metal::split_work_to_cores(active_core_grids, units_to_divide, true);
+}
 
 template <bool initialize_args>
 inline __attribute__((always_inline)) void set_slice_runtime_args_tile(
@@ -210,9 +234,8 @@ void SliceTileProgramFactory::override_runtime_arguments(
     uint32_t num_unpadded_tiles = dst_tensor.physical_volume() / TILE_HW;
 
     auto [num_cores, all_cores, core_group_1, core_group_2, num_tiles_per_core_group_1, num_tiles_per_core_group_2] =
-        sub_core_grids.has_value()
-            ? tt::tt_metal::split_work_to_cores(sub_core_grids.value(), num_unpadded_tiles)
-            : tt::tt_metal::split_work_to_cores(compute_with_storage_grid_size, num_unpadded_tiles);
+        ttnn::operations::data_movement::split_slice_work_to_cores(
+            compute_with_storage_grid_size, sub_core_grids, num_unpadded_tiles);
 
     ttnn::operations::data_movement::set_slice_runtime_args_tile<false>(
         src_tensor,
@@ -238,9 +261,8 @@ tt::tt_metal::ProgramDescriptor SliceTileProgramFactory::create_descriptor(
 
     auto compute_with_storage_grid_size = device->compute_with_storage_grid_size();
     auto [num_cores, all_cores, core_group_1, core_group_2, num_tiles_per_core_group_1, num_tiles_per_core_group_2] =
-        args.sub_core_grids.has_value()
-            ? tt::tt_metal::split_work_to_cores(args.sub_core_grids.value(), num_unpadded_tiles)
-            : tt::tt_metal::split_work_to_cores(compute_with_storage_grid_size, num_unpadded_tiles);
+        ttnn::operations::data_movement::split_slice_work_to_cores(
+            compute_with_storage_grid_size, args.sub_core_grids, num_unpadded_tiles);
 
     tt::tt_metal::Buffer* src0_buffer = input.buffer();
     tt::tt_metal::Buffer* dst_buffer = output.buffer();

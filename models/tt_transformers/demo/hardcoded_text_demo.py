@@ -16,6 +16,7 @@ import ttnn
 from models.tt_transformers.tt.common import (
     Mode,
     PagedAttentionConfig,
+    copy_host_to_device,
     create_tt_model,
     get_padded_prefill_len,
     preprocess_inputs_prefill,
@@ -67,6 +68,7 @@ SUBDEVICE_STAGE_MEASURED_ITERATIONS = 10
 SUBDEVICE_STAGE_DECODE_TOKENS = 1
 SUBDEVICE_STAGE_PREFILL_QUEUE_ID = 0
 SUBDEVICE_STAGE_DECODE_QUEUE_ID = 1
+SUBDEVICE_STAGE_PREFILL_ROWS = 8
 
 PAGED_ATTENTION = True
 PAGE_PARAMS = {
@@ -82,7 +84,7 @@ SAMPLING_PARAMS = {
 
 TRACE_REGION_SIZE = 50_000_000
 #이거를 켤 경우 기존 cache 삭제하고 시작
-CLEAR_WEIGHT_CACHE_ON_START = True
+CLEAR_WEIGHT_CACHE_ON_START = False
 
 
 def create_tt_page_table(global_batch_size, data_parallel, paged_attention_config):
@@ -339,53 +341,283 @@ def _core_range(x0: int, y0: int, x1: int, y1: int) -> ttnn.CoreRangeSet:
     return ttnn.CoreRangeSet({ttnn.CoreRange(ttnn.CoreCoord(x0, y0), ttnn.CoreCoord(x1, y1))})
 
 
-def _split_row_ranges(cols: int, rows: int, num_subdevices: int) -> list[tuple[int, int, ttnn.CoreRangeSet]]:
-    if rows % num_subdevices != 0:
-        raise ValueError(f"SUBDEVICE_STAGE_NUM_SUBDEVICES={num_subdevices} must evenly divide device rows={rows}")
+def _core_range_set_for_subdevice_cores(subdevice_row_range, num_cols: int, num_cores: int) -> ttnn.CoreRangeSet:
+    y0, y1 = subdevice_row_range
+    capacity = num_cols * (y1 - y0 + 1)
+    if num_cores > capacity:
+        raise ValueError(f"Requested {num_cores} cores from subdevice rows {y0}-{y1}, but capacity is {capacity}")
 
-    rows_per_subdevice = rows // num_subdevices
-    ranges = []
-    for index in range(num_subdevices):
-        y0 = index * rows_per_subdevice
-        y1 = y0 + rows_per_subdevice - 1
-        ranges.append((y0, y1, _core_range(0, y0, cols - 1, y1)))
-    return ranges
+    remaining = num_cores
+    core_ranges = set()
+    for y in range(y0, y1 + 1):
+        if remaining == 0:
+            break
+        cores_in_row = min(num_cols, remaining)
+        core_ranges.add(ttnn.CoreRange(ttnn.CoreCoord(0, y), ttnn.CoreCoord(cores_in_row - 1, y)))
+        remaining -= cores_in_row
+
+    return ttnn.CoreRangeSet(core_ranges)
+
+
+def _split_stage_ranges(cols: int, rows: int, min_decode_worker_cores: int = 1) -> list[tuple[int, int, ttnn.CoreRangeSet]]:
+    if SUBDEVICE_STAGE_NUM_SUBDEVICES != 2:
+        raise ValueError("This benchmark expects exactly two subdevices: prefill and decode.")
+    min_decode_rows = max(1, (min_decode_worker_cores + cols - 1) // cols)
+    if min_decode_rows >= rows:
+        raise ValueError(
+            f"Decode subdevice needs at least {min_decode_worker_cores} worker cores, but grid={cols}x{rows} "
+            f"can leave at most {cols * (rows - 1)} cores while keeping a prefill subdevice."
+        )
+
+    prefill_rows = min(SUBDEVICE_STAGE_PREFILL_ROWS, rows - min_decode_rows)
+    if not 0 < prefill_rows < rows:
+        raise ValueError(
+            f"SUBDEVICE_STAGE_PREFILL_ROWS={SUBDEVICE_STAGE_PREFILL_ROWS} must leave at least "
+            f"{min_decode_rows} decode rows for device grid={cols}x{rows}"
+        )
+
+    split_rows = [(0, prefill_rows - 1), (prefill_rows, rows - 1)]
+    return [(y0, y1, _core_range(0, y0, cols - 1, y1)) for y0, y1 in split_rows]
 
 
 @contextmanager
-def stage_subdevice_manager(mesh_device):
+def stage_subdevice_manager(mesh_device, min_decode_worker_cores: int = 1):
     grid = mesh_device.compute_with_storage_grid_size()
     cols, rows = int(grid.x), int(grid.y)
-    sub_ranges = _split_row_ranges(cols, rows, SUBDEVICE_STAGE_NUM_SUBDEVICES)
+    sub_ranges = _split_stage_ranges(cols, rows, min_decode_worker_cores)
     sub_devices = [ttnn.SubDevice([core_range]) for _, _, core_range in sub_ranges]
     manager = mesh_device.create_sub_device_manager(sub_devices, 0)
     mesh_device.load_sub_device_manager(manager)
 
     sub_device_ids = [ttnn.SubDeviceId(index) for index in range(SUBDEVICE_STAGE_NUM_SUBDEVICES)]
+    sub_device_grid_sizes = [(cols, y1 - y0 + 1) for y0, y1, _ in sub_ranges]
+    sub_device_row_ranges = [(y0, y1) for y0, y1, _ in sub_ranges]
     split_desc = ", ".join(f"id={idx}: grid={cols}x{y1 - y0 + 1} rows={y0}-{y1}" for idx, (y0, y1, _) in enumerate(sub_ranges))
     try:
-        yield sub_device_ids, split_desc
+        yield sub_device_ids, sub_device_grid_sizes, sub_device_row_ranges, split_desc
     finally:
         mesh_device.reset_sub_device_stall_group()
         mesh_device.clear_loaded_sub_device_manager()
         mesh_device.remove_sub_device_manager(manager)
 
 
+def _required_decode_worker_cores(generator, model_args) -> int:
+    prefetcher = getattr(generator.model[0], "prefetcher", None)
+    mem_config = model_args[0].get_residual_mem_config(Mode.DECODE, prefetcher)
+    shard_spec = mem_config.shard_spec
+    if callable(shard_spec):
+        shard_spec = shard_spec()
+    if shard_spec is None:
+        return 1
+    return int(shard_spec.grid.num_cores())
+
+
+def _fit_core_range_to_subdevice(subdevice_row_range, num_cols: int, num_rows: int) -> ttnn.CoreRangeSet:
+    y0, _ = subdevice_row_range
+    return _core_range(0, y0, num_cols - 1, y0 + num_rows - 1)
+
+
+def _fit_memory_config_to_subdevice(memory_config, subdevice_grid_size, subdevice_row_range):
+    if memory_config is None or not hasattr(memory_config, "is_sharded") or not memory_config.is_sharded():
+        return memory_config
+
+    shard_spec = memory_config.shard_spec
+    if callable(shard_spec):
+        shard_spec = shard_spec()
+    if shard_spec is None:
+        return memory_config
+
+    num_cores = int(shard_spec.num_cores())
+    new_grid = _core_range_set_for_subdevice_cores(subdevice_row_range, subdevice_grid_size[0], num_cores)
+    if new_grid == shard_spec.grid:
+        return memory_config
+
+    return ttnn.MemoryConfig(
+        memory_config.memory_layout,
+        memory_config.buffer_type,
+        ttnn.ShardSpec(new_grid, shard_spec.shape, shard_spec.orientation),
+    )
+
+
+def _fit_memory_configs_in_value_to_subdevice(value, subdevice_grid_size, subdevice_row_range):
+    if hasattr(value, "is_sharded"):
+        return _fit_memory_config_to_subdevice(value, subdevice_grid_size, subdevice_row_range)
+    if isinstance(value, dict):
+        return {
+            key: _fit_memory_configs_in_value_to_subdevice(item, subdevice_grid_size, subdevice_row_range)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_fit_memory_configs_in_value_to_subdevice(item, subdevice_grid_size, subdevice_row_range) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_fit_memory_configs_in_value_to_subdevice(item, subdevice_grid_size, subdevice_row_range) for item in value)
+    return value
+
+
+def _fit_sdpa_program_config_to_subdevice(program_config, subdevice_grid_size, subdevice_row_range=None):
+    if program_config is None:
+        if subdevice_row_range is None:
+            return None
+        sub_cols, sub_rows = subdevice_grid_size
+        return ttnn.SDPAProgramConfig(
+            compute_with_storage_grid_size=ttnn.CoreCoord(sub_cols, sub_rows),
+            sub_core_grids=_fit_core_range_to_subdevice(subdevice_row_range, sub_cols, sub_rows),
+            q_chunk_size=0,
+            k_chunk_size=0,
+            exp_approx_mode=False,
+        )
+
+    if isinstance(program_config.compute_with_storage_grid_size, tuple):
+        grid_x, grid_y = program_config.compute_with_storage_grid_size
+    else:
+        grid_x, grid_y = program_config.compute_with_storage_grid_size.x, program_config.compute_with_storage_grid_size.y
+
+    sub_cols, sub_rows = subdevice_grid_size
+    fit_cols = min(int(grid_x), sub_cols)
+    fit_rows = min(int(grid_y), sub_rows)
+    sub_core_grids = program_config.sub_core_grids
+    if subdevice_row_range is not None and sub_core_grids is None:
+        sub_core_grids = _fit_core_range_to_subdevice(subdevice_row_range, fit_cols, fit_rows)
+
+    if fit_cols == int(grid_x) and fit_rows == int(grid_y) and sub_core_grids == program_config.sub_core_grids:
+        return program_config
+
+    return ttnn.SDPAProgramConfig(
+        compute_with_storage_grid_size=ttnn.CoreCoord(fit_cols, fit_rows),
+        sub_core_grids=sub_core_grids,
+        q_chunk_size=program_config.q_chunk_size,
+        k_chunk_size=program_config.k_chunk_size,
+        exp_approx_mode=program_config.exp_approx_mode,
+        max_cores_per_head_batch=program_config.max_cores_per_head_batch,
+    )
+
+
+def _fit_matmul_program_config_to_subdevice(program_config, subdevice_grid_size):
+    if program_config is None:
+        return None
+
+    if not hasattr(program_config, "compute_with_storage_grid_size"):
+        return program_config
+
+    sub_cols, sub_rows = subdevice_grid_size
+    grid = program_config.compute_with_storage_grid_size
+    fit_cols = min(int(grid.x), sub_cols)
+    fit_rows = min(int(grid.y), sub_rows)
+    allowed_worker_cores = _core_range(0, 0, fit_cols - 1, fit_rows - 1)
+
+    if isinstance(program_config, ttnn.MatmulMultiCoreReuseMultiCast1DProgramConfig):
+        return ttnn.MatmulMultiCoreReuseMultiCast1DProgramConfig(
+            compute_with_storage_grid_size=ttnn.CoreCoord(fit_cols, fit_rows),
+            in0_block_w=program_config.in0_block_w,
+            out_subblock_h=program_config.out_subblock_h,
+            out_subblock_w=program_config.out_subblock_w,
+            out_block_h=program_config.out_block_h,
+            out_block_w=program_config.out_block_w,
+            per_core_M=program_config.per_core_M,
+            per_core_N=program_config.per_core_N,
+            fuse_batch=program_config.fuse_batch,
+            fused_activation=program_config.fused_activation,
+            mcast_in0=program_config.mcast_in0,
+            gather_in0=program_config.gather_in0,
+            hop_cores=program_config.hop_cores,
+            num_global_cb_receivers=program_config.num_global_cb_receivers,
+            untilize_out=program_config.untilize_out,
+            allowed_worker_cores=allowed_worker_cores,
+        )
+
+    if isinstance(program_config, ttnn.MatmulMultiCoreReuseMultiCastProgramConfig):
+        return ttnn.MatmulMultiCoreReuseMultiCastProgramConfig(
+            compute_with_storage_grid_size=ttnn.CoreCoord(fit_cols, fit_rows),
+            in0_block_w=program_config.in0_block_w,
+            out_subblock_h=program_config.out_subblock_h,
+            out_subblock_w=program_config.out_subblock_w,
+            out_block_h=program_config.out_block_h,
+            out_block_w=program_config.out_block_w,
+            per_core_M=program_config.per_core_M,
+            per_core_N=program_config.per_core_N,
+            transpose_mcast=program_config.transpose_mcast,
+            fused_activation=program_config.fused_activation,
+            fuse_batch=program_config.fuse_batch,
+            allowed_worker_cores=allowed_worker_cores,
+        )
+
+    if isinstance(program_config, ttnn.MatmulMultiCoreReuseProgramConfig):
+        return ttnn.MatmulMultiCoreReuseProgramConfig(
+            compute_with_storage_grid_size=ttnn.CoreCoord(fit_cols, fit_rows),
+            in0_block_w=program_config.in0_block_w,
+            out_subblock_h=program_config.out_subblock_h,
+            out_subblock_w=program_config.out_subblock_w,
+            per_core_M=program_config.per_core_M,
+            per_core_N=program_config.per_core_N,
+            allowed_worker_cores=allowed_worker_cores,
+        )
+
+    return program_config
+
+
 @contextmanager
-def stage_subdevice_scope(mesh_device, sub_device_id: ttnn.SubDeviceId, queue_id: int):
+def stage_subdevice_scope(
+    mesh_device,
+    sub_device_id: ttnn.SubDeviceId,
+    queue_id: int,
+    subdevice_grid_size,
+    subdevice_row_range,
+):
     subdevice_ops = {
+        "ttnn.add",
+        "ttnn.concat",
+        "ttnn.embedding",
+        "ttnn.interleaved_to_sharded",
         "ttnn.layer_norm",
         "ttnn.linear",
         "ttnn.matmul",
         "ttnn.matmul_batched_weights",
+        "ttnn.mul",
+        "ttnn.multiply",
+        "ttnn.pad",
         "ttnn.rms_norm",
+        "ttnn.reshape",
         "ttnn.slice",
+        "ttnn.to_memory_config",
+        "ttnn.transpose",
+        "ttnn.typecast",
+        "ttnn.untilize",
+        "ttnn.experimental.rotary_embedding_llama",
+        "ttnn.transformer.scaled_dot_product_attention",
     }
+    sdpa_decode_ops = {
+        "ttnn.transformer.paged_scaled_dot_product_attention_decode",
+        "ttnn.transformer.scaled_dot_product_attention_decode",
+    }
+    sub_core_grid_ops = {
+        "ttnn.experimental.nlp_concat_heads_decode",
+    }
+    subdevice_core_range = _fit_core_range_to_subdevice(
+        subdevice_row_range, subdevice_grid_size[0], subdevice_grid_size[1]
+    )
 
     def inject_subdevice_id(operation, _args, kwargs):
         op_name = getattr(operation, "python_fully_qualified_name", "")
-        if op_name in subdevice_ops and "sub_device_id" not in kwargs:
+        for key, value in list(kwargs.items()):
+            kwargs[key] = _fit_memory_configs_in_value_to_subdevice(value, subdevice_grid_size, subdevice_row_range)
+
+        has_explicit_core_scope = kwargs.get("sub_core_grids") is not None
+        if op_name in subdevice_ops and kwargs.get("sub_device_id") is None and not has_explicit_core_scope:
             kwargs["sub_device_id"] = sub_device_id
+        if op_name in {"ttnn.linear", "ttnn.matmul", "ttnn.matmul_batched_weights"}:
+            kwargs["program_config"] = _fit_matmul_program_config_to_subdevice(
+                kwargs.get("program_config"), subdevice_grid_size
+            )
+        if op_name == "ttnn.transformer.scaled_dot_product_attention":
+            kwargs["program_config"] = _fit_sdpa_program_config_to_subdevice(
+                kwargs.get("program_config"), subdevice_grid_size
+            )
+        if op_name in sdpa_decode_ops:
+            kwargs["program_config"] = _fit_sdpa_program_config_to_subdevice(
+                kwargs.get("program_config"), subdevice_grid_size, subdevice_row_range
+            )
+        if op_name in sub_core_grid_ops and kwargs.get("sub_core_grids") is None:
+            kwargs["sub_core_grids"] = subdevice_core_range
 
     mesh_device.set_sub_device_stall_group([sub_device_id])
     with ttnn.command_queue(queue_id), ttnn.register_pre_operation_hook(inject_subdevice_id):
@@ -506,6 +738,100 @@ def _run_decode_stage_no_read(generator: Generator, page_table, tt_kv_cache, ben
     return outputs
 
 
+def _prepare_prefill_stage_device_inputs(generator: Generator, page_table, tt_kv_cache, bench_inputs):
+    model_id = 0
+    prompt_len = bench_inputs["prompt_len"]
+    prefill_seq_len = bench_inputs["prefill_ids"].shape[-1]
+    _set_generator_mode(generator, Mode.PREFILL)
+    page_table_user = generator._get_prefill_user_page_table(
+        page_table[0:1],
+        tt_kv_cache[model_id],
+        prompt_len,
+        trace_enabled=False,
+        prefill_seq_len=prefill_seq_len,
+        use_batched_prefill=False,
+        user_id=0,
+        padded_batch_size=None,
+    )
+    host_inputs = generator.model[model_id].prepare_prefill_inputs_trace(
+        bench_inputs["prefill_ids"],
+        page_table=page_table_user,
+        user_id=0,
+    )
+    device_inputs = copy_host_to_device(
+        (host_inputs[0], host_inputs[3], host_inputs[4], host_inputs[5]),
+        mesh_device=generator.model_args[model_id].mesh_device,
+    )
+    return {
+        "model_id": model_id,
+        "prompt_len": prompt_len,
+        "device_inputs": device_inputs,
+        "rot_mats_global": host_inputs[1],
+        "rot_mats_local": host_inputs[2],
+    }
+
+
+def _run_prefill_stage_prepared(generator: Generator, tt_kv_cache, prepared_inputs):
+    model_id = prepared_inputs["model_id"]
+    _set_generator_mode(generator, Mode.PREFILL)
+    transformed_inputs = generator.model[model_id].transform_and_embed_prefill_inputs_device(
+        *prepared_inputs["device_inputs"]
+    )
+    return generator.model[model_id].ttnn_prefill_forward(
+        x=transformed_inputs[0],
+        rot_mats_global=prepared_inputs["rot_mats_global"],
+        rot_mats_local=prepared_inputs["rot_mats_local"],
+        page_table=transformed_inputs[1],
+        chunk_page_table=transformed_inputs[2],
+        # The benchmark prefill starts at 0, so the full RoPE mats are already the right slice.
+        # Skipping the traced dynamic slice avoids a tiny unaligned rank-1 concat.
+        chunk_start_idx=None,
+        get_last_token=(prepared_inputs["prompt_len"] - 1) // 32 * 32,
+        kv_cache=tt_kv_cache[model_id],
+    )
+
+
+def _prepare_decode_stage_device_inputs(generator: Generator, page_table, bench_inputs):
+    prepared_inputs = []
+    for iteration in range(SUBDEVICE_STAGE_DECODE_TOKENS):
+        current_pos = bench_inputs["current_pos"] + iteration
+        tokens = torch.chunk(bench_inputs["decode_in_tok"], generator.data_parallel, 0)
+        current_pos_chunks = torch.chunk(current_pos, generator.data_parallel, 0)
+        page_table_chunks = torch.chunk(page_table, generator.data_parallel, 0) if page_table is not None else None
+        iteration_inputs = []
+        _set_generator_mode(generator, Mode.DECODE)
+        for model_id in range(generator.data_parallel):
+            user_page_table = page_table_chunks[model_id] if page_table_chunks is not None else None
+            iteration_inputs.append(
+                generator.model[model_id].prepare_inputs_decode(
+                    tokens[model_id],
+                    current_pos_chunks[model_id],
+                    user_page_table,
+                )
+            )
+        prepared_inputs.append(iteration_inputs)
+    return prepared_inputs
+
+
+def _run_decode_stage_prepared(generator: Generator, tt_kv_cache, prepared_inputs):
+    outputs = None
+    _set_generator_mode(generator, Mode.DECODE)
+    for iteration_inputs in prepared_inputs:
+        outputs = []
+        for model_id, device_inputs in enumerate(iteration_inputs):
+            user_kv_cache = tt_kv_cache[model_id] if tt_kv_cache is not None else None
+            tt_logits_i, tt_log_probs_i = generator.model[model_id].ttnn_decode_forward(
+                device_inputs[0],
+                device_inputs[1],
+                rot_mat_idxs=device_inputs[2],
+                page_table=device_inputs[3],
+                kv_cache=user_kv_cache,
+                sampling_on_device=False,
+            )
+            outputs.append((tt_logits_i, tt_log_probs_i))
+    return outputs
+
+
 def _time_full_grid_sequential_once(mesh_device, generator, tt_kv_cache, bench_inputs):
     ttnn.synchronize_device(mesh_device)
     start_s = time.perf_counter()
@@ -527,27 +853,53 @@ def _time_full_grid_sequential_once(mesh_device, generator, tt_kv_cache, bench_i
     return elapsed_s
 
 
-def _time_subdevice_parallel_once(mesh_device, generator, tt_kv_cache, bench_inputs, sub_device_ids):
+def _time_subdevice_parallel_once(
+    mesh_device,
+    generator,
+    tt_kv_cache,
+    bench_inputs,
+    sub_device_ids,
+    sub_device_grid_sizes,
+    sub_device_row_ranges,
+):
+    ttnn.synchronize_device(mesh_device)
+    prefill_inputs = _prepare_prefill_stage_device_inputs(
+        generator,
+        bench_inputs["prefill_page_table"],
+        tt_kv_cache,
+        bench_inputs,
+    )
+    decode_inputs = _prepare_decode_stage_device_inputs(
+        generator,
+        bench_inputs["decode_page_table"],
+        bench_inputs,
+    )
     ttnn.synchronize_device(mesh_device)
     start_s = time.perf_counter()
-    with stage_subdevice_scope(mesh_device, sub_device_ids[0], SUBDEVICE_STAGE_PREFILL_QUEUE_ID):
-        prefill_out = _run_prefill_stage_no_read(
+    with stage_subdevice_scope(
+        mesh_device,
+        sub_device_ids[0],
+        SUBDEVICE_STAGE_PREFILL_QUEUE_ID,
+        sub_device_grid_sizes[0],
+        sub_device_row_ranges[0],
+    ):
+        prefill_out = _run_prefill_stage_prepared(generator, tt_kv_cache, prefill_inputs)
+    with stage_subdevice_scope(
+        mesh_device,
+        sub_device_ids[1],
+        SUBDEVICE_STAGE_DECODE_QUEUE_ID,
+        sub_device_grid_sizes[1],
+        sub_device_row_ranges[1],
+    ):
+        decode_out = _run_decode_stage_prepared(
             generator,
-            bench_inputs["prefill_page_table"],
             tt_kv_cache,
-            bench_inputs,
-        )
-    with stage_subdevice_scope(mesh_device, sub_device_ids[1], SUBDEVICE_STAGE_DECODE_QUEUE_ID):
-        decode_out = _run_decode_stage_no_read(
-            generator,
-            bench_inputs["decode_page_table"],
-            tt_kv_cache,
-            bench_inputs,
+            decode_inputs,
         )
     mesh_device.reset_sub_device_stall_group()
     ttnn.synchronize_device(mesh_device)
     elapsed_s = time.perf_counter() - start_s
-    _deallocate_ttnn_outputs((prefill_out, decode_out))
+    _deallocate_ttnn_outputs((prefill_inputs["device_inputs"], decode_inputs, prefill_out, decode_out))
     return elapsed_s
 
 
@@ -589,6 +941,7 @@ def run_subdevice_stage_benchmark(mesh_device, generator, model_args, page_table
     if NUM_COMMAND_QUEUES <= max(SUBDEVICE_STAGE_PREFILL_QUEUE_ID, SUBDEVICE_STAGE_DECODE_QUEUE_ID):
         raise ValueError("NUM_COMMAND_QUEUES must cover the configured prefill/decode queue ids.")
 
+    min_decode_worker_cores = _required_decode_worker_cores(generator, model_args)
     bench_inputs = _prepare_stage_benchmark_inputs(model_args, page_table, tt_kv_cache, tokenizer, input_prompts)
 
     logger.info("Preparing independent decode KV cache before timing...")
@@ -612,14 +965,35 @@ def run_subdevice_stage_benchmark(mesh_device, generator, model_args, page_table
         logger.info(f"full_grid_sequential[{iteration}]: {elapsed * 1000.0:.3f} ms")
 
     sub_parallel_s = []
-    with stage_subdevice_manager(mesh_device) as (sub_device_ids, split_desc):
+    with stage_subdevice_manager(mesh_device, min_decode_worker_cores) as (
+        sub_device_ids,
+        sub_device_grid_sizes,
+        sub_device_row_ranges,
+        split_desc,
+    ):
         logger.info(f"Loaded stage subdevice manager: {split_desc}")
         logger.info("Warming up subdevice-parallel prefill+decode...")
         for _ in range(SUBDEVICE_STAGE_WARMUP_ITERATIONS):
-            _time_subdevice_parallel_once(mesh_device, generator, tt_kv_cache, bench_inputs, sub_device_ids)
+            _time_subdevice_parallel_once(
+                mesh_device,
+                generator,
+                tt_kv_cache,
+                bench_inputs,
+                sub_device_ids,
+                sub_device_grid_sizes,
+                sub_device_row_ranges,
+            )
 
         for iteration in range(SUBDEVICE_STAGE_MEASURED_ITERATIONS):
-            elapsed = _time_subdevice_parallel_once(mesh_device, generator, tt_kv_cache, bench_inputs, sub_device_ids)
+            elapsed = _time_subdevice_parallel_once(
+                mesh_device,
+                generator,
+                tt_kv_cache,
+                bench_inputs,
+                sub_device_ids,
+                sub_device_grid_sizes,
+                sub_device_row_ranges,
+            )
             sub_parallel_s.append(elapsed)
             logger.info(f"subdevice_parallel[{iteration}]: {elapsed * 1000.0:.3f} ms")
 

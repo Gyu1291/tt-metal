@@ -101,8 +101,14 @@ void RotaryEmbeddingLlamaDeviceOperation::validate_on_program_cache_miss(
             (trans_mat.memory_config().memory_layout() == TensorMemoryLayout::HEIGHT_SHARDED),
             "transformation matrix for RoPE must be HEIGHT_SHARDED.");
 
-        uint32_t num_cores = input_tensor.device()->compute_with_storage_grid_size().x *
-                             input_tensor.device()->compute_with_storage_grid_size().y;
+        uint32_t num_cores = operation_attributes.sub_device_id.has_value()
+                                  ? input_tensor.device()
+                                        ->worker_cores(
+                                            tt::tt_metal::HalProgrammableCoreType::TENSIX,
+                                            operation_attributes.sub_device_id.value())
+                                        .num_cores()
+                                  : input_tensor.device()->compute_with_storage_grid_size().x *
+                                        input_tensor.device()->compute_with_storage_grid_size().y;
         uint32_t batch = input_tensor.logical_shape()[1];
         TT_FATAL(
             batch <= num_cores,
@@ -242,7 +248,8 @@ tt::tt_metal::Tensor rotary_embedding_llama(
     const tt::tt_metal::Tensor& trans_mat,
     bool is_decode_mode,
     const std::optional<MemoryConfig>& memory_config,
-    const std::optional<const ttnn::DeviceComputeKernelConfig>& compute_kernel_config) {
+    const std::optional<const ttnn::DeviceComputeKernelConfig>& compute_kernel_config,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id) {
     using OperationType = ttnn::experimental::prim::RotaryEmbeddingLlamaDeviceOperation;
 
     auto arch = input_tensor.storage_type() == StorageType::DEVICE ? input_tensor.device()->arch()
@@ -258,7 +265,8 @@ tt::tt_metal::Tensor rotary_embedding_llama(
     auto operation_attributes = OperationType::operation_attributes_t{
         .is_decode_mode = is_decode_mode,
         .output_mem_config = memory_config.value_or(default_memory_config),
-        .compute_kernel_config = kernel_config_val};
+        .compute_kernel_config = kernel_config_val,
+        .sub_device_id = sub_device_id};
     auto tensor_args = OperationType::tensor_args_t{
         .input_tensor = input_tensor, .cos_cache = cos_cache, .sin_cache = sin_cache, .trans_mat = trans_mat};
 

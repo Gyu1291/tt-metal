@@ -17,6 +17,22 @@ namespace ttnn::operations::data_movement::detail {
 
 bool eq_spans(const auto a, const auto b) { return std::equal(a.begin(), a.end(), b.begin(), b.end()); }
 
+std::optional<CoreRangeSet> resolve_pad_sub_core_grids(
+    const ttnn::Tensor& input_tensor,
+    const std::optional<CoreRangeSet>& sub_core_grids,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id) {
+    TT_FATAL(
+        !(sub_core_grids.has_value() && sub_device_id.has_value()),
+        "ttnn::pad received both sub_core_grids and sub_device_id; provide only one");
+
+    if (!sub_device_id.has_value()) {
+        return sub_core_grids;
+    }
+
+    TT_FATAL(input_tensor.storage_type() == StorageType::DEVICE, "ttnn::pad sub_device_id requires a device tensor");
+    return input_tensor.device()->worker_cores(tt::tt_metal::HalProgrammableCoreType::TENSIX, sub_device_id.value());
+}
+
 ttnn::Shape update_original_shape(const ttnn::Shape& padded_shape, const ttnn::Shape& input_shape) {
     ttnn::SmallVector<uint32_t> updated_shape;
     size_t input_rank = input_shape.rank();
@@ -356,7 +372,8 @@ ttnn::Tensor pad(
     const float value,
     const bool use_multicore,
     const std::optional<MemoryConfig>& memory_config_arg,
-    const std::optional<CoreRangeSet>& sub_core_grids) {
+    const std::optional<CoreRangeSet>& sub_core_grids,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id) {
     using PadSpecDim = operations::data_movement::PadSpecDim;
     const int original_rank = input_tensor.logical_shape().rank();
 
@@ -385,12 +402,15 @@ ttnn::Tensor pad(
             first_pad_idx);
     }
 
+    auto resolved_sub_core_grids =
+        operations::data_movement::detail::resolve_pad_sub_core_grids(input_tensor, sub_core_grids, sub_device_id);
+
     if (input_tensor.layout() == ttnn::TILE_LAYOUT) {
         return operations::data_movement::detail::invoke_tile(
-            input_tensor, working_padding, value, use_multicore, memory_config_arg, sub_core_grids);
+            input_tensor, working_padding, value, use_multicore, memory_config_arg, resolved_sub_core_grids);
     }
     return operations::data_movement::detail::invoke_rm(
-        input_tensor, working_padding, value, use_multicore, memory_config_arg, sub_core_grids);
+        input_tensor, working_padding, value, use_multicore, memory_config_arg, resolved_sub_core_grids);
 }
 
 ttnn::Tensor pad(
@@ -399,14 +419,15 @@ ttnn::Tensor pad(
     const float value,
     const bool use_multicore,
     const std::optional<MemoryConfig>& memory_config_arg,
-    const std::optional<CoreRangeSet>& sub_core_grids) {
+    const std::optional<CoreRangeSet>& sub_core_grids,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id) {
     using PadSpecDim = operations::data_movement::PadSpecDim;
     ttnn::SmallVector<PadSpecDim> padding_impl;
     std::transform(padding.begin(), padding.end(), std::back_inserter(padding_impl), [](auto& p) {
         return PadSpecDim(p[0], p[1]);
     });
 
-    return ttnn::pad(input_tensor, padding_impl, value, use_multicore, memory_config_arg, sub_core_grids);
+    return ttnn::pad(input_tensor, padding_impl, value, use_multicore, memory_config_arg, sub_core_grids, sub_device_id);
 }
 
 ttnn::Tensor pad(
@@ -416,7 +437,8 @@ ttnn::Tensor pad(
     const float value,
     const bool use_multicore,
     const std::optional<MemoryConfig>& memory_config_arg,
-    const std::optional<CoreRangeSet>& sub_core_grids) {
+    const std::optional<CoreRangeSet>& sub_core_grids,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id) {
     using PadSpecDim = operations::data_movement::PadSpecDim;
     ttnn::SmallVector<PadSpecDim> padding_impl;
     const auto& log_shape = input_tensor.logical_shape();
@@ -425,7 +447,7 @@ ttnn::Tensor pad(
             input_tensor_start.at(i), output_padded_shape.at(i) - log_shape[i] - input_tensor_start.at(i));
     }
 
-    return ttnn::pad(input_tensor, padding_impl, value, use_multicore, memory_config_arg, sub_core_grids);
+    return ttnn::pad(input_tensor, padding_impl, value, use_multicore, memory_config_arg, sub_core_grids, sub_device_id);
 }
 
 }  // namespace ttnn

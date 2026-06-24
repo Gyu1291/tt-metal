@@ -226,6 +226,7 @@ void py_module(nb::module_& mod) {
             memory_config (ttnn.MemoryConfig): the desired memory configuration for the tensor.
             dtype (ttnn.DataType, optional): the optional `ttnn` data type. Defaults to `None`.
             output_tensor (ttnn.Tensor, optional): the optional output tensor. Defaults to `None`.
+            sub_device_id (ttnn.SubDeviceId, optional): the sub-device id to run the copy fallback on. Defaults to `None`.
 
         Returns:
             ttnn.Tensor: the converted tensor.
@@ -234,7 +235,8 @@ void py_module(nb::module_& mod) {
         nb::arg("tensor"),
         nb::arg("memory_config"),
         nb::arg("dtype") = nb::none(),
-        nb::arg("output_tensor") = nb::none());
+        nb::arg("output_tensor") = nb::none(),
+        nb::arg("sub_device_id") = nb::none());
 
     ttnn::bind_function<"to_dtype">(
         mod,

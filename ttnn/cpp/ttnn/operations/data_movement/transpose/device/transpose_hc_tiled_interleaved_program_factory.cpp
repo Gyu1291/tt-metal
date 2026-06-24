@@ -22,6 +22,57 @@ namespace ttnn::prim {
 
 namespace {
 
+std::tuple<uint32_t, CoreRangeSet, CoreRangeSet, CoreRangeSet, uint32_t, uint32_t>
+split_work_to_subdevice_cores(
+    IDevice* device,
+    const std::optional<SubDeviceId>& sub_device_id,
+    const CoreCoord& compute_with_storage_grid_size,
+    uint32_t units_to_divide) {
+    if (!sub_device_id.has_value()) {
+        return split_work_to_cores(compute_with_storage_grid_size, units_to_divide);
+    }
+
+    if (units_to_divide == 0) {
+        return std::make_tuple(0, CoreRangeSet(), CoreRangeSet(), CoreRangeSet(), 0, 0);
+    }
+
+    const auto sub_device_cores = device->worker_cores(HalProgrammableCoreType::TENSIX, sub_device_id.value());
+    const uint32_t max_num_cores = sub_device_cores.num_cores();
+    TT_FATAL(max_num_cores > 0, "Sub-device core grid must contain at least one core");
+
+    const uint32_t target_num_cores = std::min(units_to_divide, max_num_cores);
+    const auto selected_cores_vec = corerange_to_cores(sub_device_cores, target_num_cores);
+    const CoreRangeSet all_cores{ttsl::Span<const CoreCoord>(selected_cores_vec)};
+
+    CoreRangeSet core_group_1;
+    CoreRangeSet core_group_2;
+    uint32_t units_per_core_group_1 = units_to_divide / target_num_cores;
+    uint32_t units_per_core_group_2 = 0;
+    const uint32_t num_cores_with_more_work = units_to_divide % target_num_cores;
+
+    if (num_cores_with_more_work == 0) {
+        core_group_1 = all_cores;
+    } else {
+        units_per_core_group_2 = units_per_core_group_1;
+        units_per_core_group_1++;
+
+        std::vector<CoreCoord> group_1_cores(
+            selected_cores_vec.begin(), selected_cores_vec.begin() + num_cores_with_more_work);
+        std::vector<CoreCoord> group_2_cores(
+            selected_cores_vec.begin() + num_cores_with_more_work, selected_cores_vec.end());
+        core_group_1 = CoreRangeSet{ttsl::Span<const CoreCoord>(group_1_cores)};
+        core_group_2 = CoreRangeSet{ttsl::Span<const CoreCoord>(group_2_cores)};
+    }
+
+    return std::make_tuple(
+        target_num_cores,
+        all_cores,
+        core_group_1,
+        core_group_2,
+        units_per_core_group_1,
+        units_per_core_group_2);
+}
+
 void set_runtime_args_hc_tiled_interleaved(
     Program& program,
     KernelHandle reader_kernel_id,
@@ -29,7 +80,8 @@ void set_runtime_args_hc_tiled_interleaved(
     const Tensor& input_tensor,
     Tensor& output_tensor,
     bool is_create,
-    const CoreRange& total_cores) {
+    const CoreRangeSet& total_cores,
+    const std::optional<SubDeviceId>& sub_device_id) {
     auto* input_buffer = input_tensor.buffer();
     auto* output_buffer = output_tensor.buffer();
 
@@ -43,9 +95,10 @@ void set_runtime_args_hc_tiled_interleaved(
     auto& cached_reader_args = GetRuntimeArgs(program, reader_kernel_id);
     auto& cached_writer_args = GetRuntimeArgs(program, writer_kernel_id);
 
+    auto* device = input_tensor.device();
     auto compute_with_storage_grid_size = input_tensor.device()->compute_with_storage_grid_size();
     auto [num_cores, all_cores, core_group_1, core_group_2, num_tiles_per_core_group_1, num_tiles_per_core_group_2] =
-        split_work_to_cores(compute_with_storage_grid_size, num_tensor_tiles);
+        split_work_to_subdevice_cores(device, sub_device_id, compute_with_storage_grid_size, num_tensor_tiles);
     auto
         [padded_num_cores,
          padded_all_cores,
@@ -53,7 +106,7 @@ void set_runtime_args_hc_tiled_interleaved(
          padded_core_group_2,
          padded_num_tiles_per_core_group_1,
          padded_num_tiles_per_core_group_2] =
-            split_work_to_cores(compute_with_storage_grid_size, padded_num_tensor_tiles);
+            split_work_to_subdevice_cores(device, sub_device_id, compute_with_storage_grid_size, padded_num_tensor_tiles);
 
     all_cores = num_cores > padded_num_cores ? all_cores : padded_all_cores;
     auto cores = corerange_to_cores(all_cores, std::nullopt);
@@ -61,7 +114,7 @@ void set_runtime_args_hc_tiled_interleaved(
     uint32_t start_idx = 0;
     uint32_t padded_start_idx = 0;
     // Need to set runtime args for all cores, not just the ones doing work.
-    for (const auto& core : total_cores) {
+    for (const auto& core : corerange_to_cores(total_cores, std::nullopt)) {
         uint32_t num_tiles_per_core;
         uint32_t padded_tiles_per_core;
 
@@ -125,9 +178,12 @@ TransposeHCTiledInterleavedProgramFactory::cached_program_t TransposeHCTiledInte
     uint32_t single_tile_size = tt::tile_size(cb_data_format);
 
     auto compute_with_storage_grid_size = input_tensor.device()->compute_with_storage_grid_size();
-    uint32_t num_cores_x = compute_with_storage_grid_size.x;
-    uint32_t num_cores_y = compute_with_storage_grid_size.y;
-    CoreRange total_cores({0, 0}, {num_cores_x - 1, num_cores_y - 1});
+    auto [num_cores, total_cores, core_group_1, core_group_2, num_tiles_per_core_group_1, num_tiles_per_core_group_2] =
+        split_work_to_subdevice_cores(
+            input_tensor.device(),
+            operation_attributes.sub_device_id,
+            compute_with_storage_grid_size,
+            std::max(input_tensor.physical_volume(), output_tensor.physical_volume()) / (tile_shape[0] * tile_shape[1]));
 
     uint32_t src0_cb_index = tt::CBIndex::c_0;
     uint32_t padding_cb_index = tt::CBIndex::c_1;
@@ -221,14 +277,21 @@ TransposeHCTiledInterleavedProgramFactory::cached_program_t TransposeHCTiledInte
     SetCommonRuntimeArgs(program, writer_kernel_id, writer_common_runtime_args);
 
     set_runtime_args_hc_tiled_interleaved(
-        program, reader_kernel_id, writer_kernel_id, input_tensor, output_tensor, true, total_cores);
+        program,
+        reader_kernel_id,
+        writer_kernel_id,
+        input_tensor,
+        output_tensor,
+        true,
+        total_cores,
+        operation_attributes.sub_device_id);
 
     return {std::move(program), {.reader_kernel_id = reader_kernel_id, .writer_kernel_id = writer_kernel_id}};
 }
 
 void TransposeHCTiledInterleavedProgramFactory::override_runtime_arguments(
     cached_program_t& cached_program,
-    const TransposeParams& /*operation_attributes*/,
+    const TransposeParams& operation_attributes,
     const TransposeInputs& tensor_args,
     Tensor& output_tensor) {
     auto& program = cached_program.program;
@@ -242,9 +305,14 @@ void TransposeHCTiledInterleavedProgramFactory::override_runtime_arguments(
         *output_tensor.buffer());
 
     auto compute_with_storage_grid_size = tensor_args.input.device()->compute_with_storage_grid_size();
-    uint32_t num_cores_x = compute_with_storage_grid_size.x;
-    uint32_t num_cores_y = compute_with_storage_grid_size.y;
-    CoreRange total_cores({0, 0}, {num_cores_x - 1, num_cores_y - 1});
+    auto tile_shape = tensor_args.input.tensor_spec().tile().get_tile_shape();
+    auto [num_cores, total_cores, core_group_1, core_group_2, num_tiles_per_core_group_1, num_tiles_per_core_group_2] =
+        split_work_to_subdevice_cores(
+            tensor_args.input.device(),
+            operation_attributes.sub_device_id,
+            compute_with_storage_grid_size,
+            std::max(tensor_args.input.physical_volume(), output_tensor.physical_volume()) /
+                (tile_shape[0] * tile_shape[1]));
 
     set_runtime_args_hc_tiled_interleaved(
         program,
@@ -253,7 +321,8 @@ void TransposeHCTiledInterleavedProgramFactory::override_runtime_arguments(
         tensor_args.input,
         output_tensor,
         false,
-        total_cores);
+        total_cores,
+        operation_attributes.sub_device_id);
 }
 
 }  // namespace ttnn::prim

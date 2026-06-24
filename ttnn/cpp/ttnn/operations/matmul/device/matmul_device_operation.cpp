@@ -91,6 +91,32 @@ void warn_if_allowed_worker_cores_missing(
         program_config.value());
 }
 
+MemoryConfig map_allocation_memory_config_to_subdevice(
+    const Tensor& input_tensor,
+    const MemoryConfig& memory_config,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id) {
+    if (!sub_device_id.has_value() || !memory_config.is_sharded() || !memory_config.shard_spec().has_value()) {
+        return memory_config;
+    }
+
+    const auto shard_spec = memory_config.shard_spec().value();
+    const uint32_t num_cores = shard_spec.grid.num_cores();
+    auto* device = input_tensor.device();
+    const auto sub_device_cores =
+        device->worker_cores(tt::tt_metal::HalProgrammableCoreType::TENSIX, sub_device_id.value());
+    TT_FATAL(
+        sub_device_cores.num_cores() >= num_cores,
+        "Sub-device has {} worker cores, but sharded memory config requires {} cores",
+        sub_device_cores.num_cores(),
+        num_cores);
+
+    const bool row_wise = shard_spec.orientation == tt::tt_metal::ShardOrientation::ROW_MAJOR;
+    const auto selected_cores = corerange_to_cores(sub_device_cores, num_cores, row_wise);
+    const tt::tt_metal::CoreRangeSet selected_core_ranges{ttsl::Span<const tt::tt_metal::CoreCoord>(selected_cores)};
+    const tt::tt_metal::ShardSpec remapped_shard_spec(selected_core_ranges, shard_spec.shape, shard_spec.orientation);
+    return memory_config.with_shard_spec(remapped_shard_spec);
+}
+
 }  // namespace
 
 MatmulDeviceOperation::program_factory_t MatmulDeviceOperation::select_program_factory(
@@ -1494,7 +1520,13 @@ MatmulDeviceOperation::tensor_return_value_t MatmulDeviceOperation::create_outpu
     const auto& output_specs = compute_output_specs(attributes, args);
     output_tensors.reserve(output_specs.size());
     for (const auto& output_spec : output_specs) {
-        output_tensors.emplace_back(create_device_tensor(output_spec, device));
+        const auto allocation_mem_config = map_allocation_memory_config_to_subdevice(
+            input_tensors.at(0), output_spec.memory_config(), attributes.sub_device_id);
+        if (allocation_mem_config != output_spec.memory_config()) {
+            output_tensors.emplace_back(create_device_tensor(output_spec, device, allocation_mem_config));
+        } else {
+            output_tensors.emplace_back(create_device_tensor(output_spec, device));
+        }
     }
     return output_tensors;
 }

@@ -67,10 +67,13 @@ RotaryEmbeddingLlamaMultiCore::cached_program_t RotaryEmbeddingLlamaMultiCore::c
         get_compute_kernel_config_args(device->arch(), operation_attributes.compute_kernel_config);
 
     auto compute_with_storage_grid_size = device->compute_with_storage_grid_size();
-    uint32_t num_cores_x = compute_with_storage_grid_size.x;
-    uint32_t num_cores_y = compute_with_storage_grid_size.y;
-
-    CoreRange all_cores = CoreRange({0, 0}, {num_cores_x - 1, num_cores_y - 1});
+    CoreRangeSet all_cores = operation_attributes.sub_device_id.has_value()
+                                  ? device->worker_cores(
+                                        tt::tt_metal::HalProgrammableCoreType::TENSIX,
+                                        operation_attributes.sub_device_id.value())
+                                  : CoreRangeSet(CoreRange(
+                                        {0, 0},
+                                        {compute_with_storage_grid_size.x - 1, compute_with_storage_grid_size.y - 1}));
 
     bool in_sharded = input.shard_spec().has_value();
     std::optional<ShardSpec> shard_spec = in_sharded ? input.shard_spec() : output.shard_spec();
@@ -81,7 +84,7 @@ RotaryEmbeddingLlamaMultiCore::cached_program_t RotaryEmbeddingLlamaMultiCore::c
     bool row_major = true;
 
     // Parallelization
-    const uint32_t num_cores = num_cores_x * num_cores_y;
+    const uint32_t num_cores = all_cores.num_cores();
     const uint32_t batch_parallel_factor = std::min(batch, num_cores);
     const uint32_t seq_parallel_factor = std::min(num_cores / batch_parallel_factor, seq_len_t);
     const uint32_t batch_per_core = (batch + batch_parallel_factor - 1) / batch_parallel_factor;
@@ -241,7 +244,7 @@ RotaryEmbeddingLlamaMultiCore::cached_program_t RotaryEmbeddingLlamaMultiCore::c
             .compile_args = compute_kernel_args,
             .defines = kernel_defines});
 
-    const auto& cores = grid_to_cores(num_cores, num_cores_x, num_cores_y, row_major);
+    const auto& cores = corerange_to_cores(all_cores, std::nullopt, row_major);
 
     /*
         Overall loop iterations: # total cores

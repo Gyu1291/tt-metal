@@ -44,6 +44,7 @@ Tensor embedding(
     EmbeddingsType embeddings_type,
     const std::optional<tt::tt_metal::MemoryConfig>& output_mem_config = std::nullopt,
     const std::optional<uint32_t>& pad_token = std::nullopt,
-    const std::optional<Tensor>& optional_output_tensor = std::nullopt);
+    const std::optional<Tensor>& optional_output_tensor = std::nullopt,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id = std::nullopt);
 
 }  // namespace ttnn::prim

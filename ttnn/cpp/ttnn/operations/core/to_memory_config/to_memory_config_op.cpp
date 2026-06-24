@@ -250,7 +250,8 @@ Tensor to_memory_config(
     const Tensor& tensor,
     const MemoryConfig& memory_config,
     std::optional<DataType> dtype,
-    const std::optional<Tensor>& output_tensor) {
+    const std::optional<Tensor>& output_tensor,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id) {
     using namespace tt::tt_metal;
 
     // Temporary until we see why buffer data not being populated
@@ -290,7 +291,9 @@ Tensor to_memory_config(
                         tensor,
                         memory_config,
                         dtype.value_or(tensor.dtype()),
-                        optional_output_tensors.empty() ? std::nullopt : optional_output_tensors.at(0));
+                        optional_output_tensors.empty() ? std::nullopt : optional_output_tensors.at(0),
+                        false,
+                        sub_device_id);
                 }
                 if (can_use_reshard(tensor, memory_config, dtype, output_tensor)) {
                     return ttnn::reshard(tensor, memory_config, output_tensor);
@@ -316,7 +319,8 @@ Tensor to_memory_config(
                         memory_config,
                         dtype.value_or(temp.dtype()),
                         keep_l1_aligned,
-                        optional_output_tensors.empty() ? std::nullopt : optional_output_tensors.at(0));
+                        optional_output_tensors.empty() ? std::nullopt : optional_output_tensors.at(0),
+                        sub_device_id);
                 }
             }
         }
@@ -332,7 +336,8 @@ Tensor to_memory_config(
                 memory_config,
                 dtype.value_or(tensor.dtype()),
                 keep_l1_aligned,
-                optional_output_tensors.empty() ? std::nullopt : optional_output_tensors.at(0));
+                optional_output_tensors.empty() ? std::nullopt : optional_output_tensors.at(0),
+                sub_device_id);
         }
     }
     // to_interleaved path
@@ -344,7 +349,9 @@ Tensor to_memory_config(
         tensor,
         memory_config,
         dtype.value_or(tensor.dtype()),
-        optional_output_tensors.empty() ? std::nullopt : optional_output_tensors.at(0));
+        optional_output_tensors.empty() ? std::nullopt : optional_output_tensors.at(0),
+        false,
+        sub_device_id);
 }
 
 }  // namespace ttnn

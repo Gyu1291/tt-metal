@@ -71,14 +71,13 @@ EmbeddingsRMProgramFactory::cached_program_t EmbeddingsRMProgramFactory::create(
         num_blocks_per_core_group_2 = 0;
         row_major = shard_spec.orientation == ShardOrientation::ROW_MAJOR;
     } else {
-        std::tie(
-            std::ignore,
-            all_cores,
-            core_group_1,
-            core_group_2,
-            num_blocks_per_core_group_1,
-            num_blocks_per_core_group_2) =
-            tt::tt_metal::split_work_to_cores(compute_with_storage_grid_size, problem_size);
+        CoreSplitResult work = split_embedding_work_to_cores(
+            device, operation_attributes.sub_device_id, compute_with_storage_grid_size, problem_size);
+        all_cores = work.all_cores;
+        core_group_1 = work.core_group_1;
+        core_group_2 = work.core_group_2;
+        num_blocks_per_core_group_1 = work.units_per_core_group_1;
+        num_blocks_per_core_group_2 = work.units_per_core_group_2;
     }
     uint32_t g1_numcores = core_group_1.num_cores();
 

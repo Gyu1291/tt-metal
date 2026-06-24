@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "copy_device_operation.hpp"
+#include "copy_subdevice_work_split.hpp"
 
 #include <cmath>
 
@@ -30,7 +31,7 @@ constexpr const char* KERNEL_WRITER =
 }  // namespace
 
 ProgramDescriptor CopyDeviceOperation::DefaultRowMajor::create_descriptor(
-    const operation_attributes_t& /*operation_attributes*/,
+    const operation_attributes_t& operation_attributes,
     const tensor_args_t& tensor_args,
     tensor_return_value_t& output_tensor) {
     const auto& input = tensor_args.input;
@@ -68,8 +69,10 @@ ProgramDescriptor CopyDeviceOperation::DefaultRowMajor::create_descriptor(
     auto compute_with_storage_grid_size = device->compute_with_storage_grid_size();
 
     const uint32_t total_logical_rows = input.logical_volume() / input.logical_shape()[-1];
+    auto split_result = split_copy_work_to_cores(
+        device, operation_attributes.sub_device_id, compute_with_storage_grid_size, total_logical_rows);
     auto [num_cores, all_cores, core_group_1, core_group_2, num_rows_per_core_group_1, num_rows_per_core_group_2] =
-        tt::tt_metal::split_work_to_cores(compute_with_storage_grid_size, total_logical_rows);
+        split_result;
     std::vector<CoreCoord> ordered_cores = corerange_to_cores(all_cores, num_cores, true);
 
     constexpr uint32_t MAX_SUBBLOCK_SIZE_BYTES = 65536 * 4;  // Chosen empirically to prevent large row OOM CB error

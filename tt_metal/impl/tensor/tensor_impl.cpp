@@ -20,12 +20,21 @@ namespace tt::tt_metal::tensor_impl {
 
 std::shared_ptr<distributed::MeshBuffer> allocate_device_buffer(
     distributed::MeshDevice* mesh_device, const TensorSpec& tensor_spec) {
-    const auto& memory_config = tensor_spec.tensor_layout().get_memory_config();
+    return allocate_device_buffer(mesh_device, tensor_spec, tensor_spec);
+}
+
+std::shared_ptr<distributed::MeshBuffer> allocate_device_buffer(
+    distributed::MeshDevice* mesh_device,
+    const TensorSpec& tensor_spec,
+    const TensorSpec& allocation_tensor_spec,
+    std::optional<SubDeviceId> sub_device_id) {
+    const auto& memory_config = allocation_tensor_spec.tensor_layout().get_memory_config();
 
     distributed::DeviceLocalBufferConfig device_local_buffer_config{
-        .page_size = tensor_spec.compute_page_size_bytes(),
+        .page_size = allocation_tensor_spec.compute_page_size_bytes(),
         .buffer_type = memory_config.buffer_type(),
-        .sharding_args = tensor_spec.compute_buffer_sharding_args(),
+        .sharding_args = allocation_tensor_spec.compute_buffer_sharding_args(),
+        .sub_device_id = sub_device_id,
     };
 
     // Use replicated buffer, which supports both working with individual shards and replicating data across all shards.

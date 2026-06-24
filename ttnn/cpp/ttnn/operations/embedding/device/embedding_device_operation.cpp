@@ -142,7 +142,8 @@ Tensor embedding(
     EmbeddingsType embeddings_type,
     const std::optional<tt::tt_metal::MemoryConfig>& output_mem_config,
     const std::optional<uint32_t>& pad_token,
-    const std::optional<Tensor>& optional_output_tensor) {
+    const std::optional<Tensor>& optional_output_tensor,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id) {
     using OperationType = EmbeddingsDeviceOperation;
     auto memory_config = output_mem_config.value_or(input_tensor_arg.memory_config());
     auto operation_attributes = OperationType::operation_attributes_t{
@@ -150,6 +151,7 @@ Tensor embedding(
         .tilized = tilized,
         .embeddings_type = embeddings_type,
         .pad_token = pad_token,
+        .sub_device_id = sub_device_id,
     };
     auto tensor_args = OperationType::tensor_args_t{
         .input_tensor_arg = input_tensor_arg,

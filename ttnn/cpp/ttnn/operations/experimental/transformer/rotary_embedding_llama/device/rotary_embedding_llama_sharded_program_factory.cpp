@@ -51,6 +51,15 @@ RotaryEmbeddingLlamaMultiCoreSharded::cached_program_t RotaryEmbeddingLlamaMulti
     auto [math_fidelity, math_approx_mode, fp32_dest_acc_en, packer_l1_acc, dst_full_sync_en] =
         get_compute_kernel_config_args(device->arch(), operation_attributes.compute_kernel_config);
 
+    if (operation_attributes.sub_device_id.has_value()) {
+        auto subdevice_cores = device->worker_cores(
+            tt::tt_metal::HalProgrammableCoreType::TENSIX, operation_attributes.sub_device_id.value());
+        TT_FATAL(
+            shard_spec->grid.subtract(subdevice_cores).empty(),
+            "rotary_embedding_llama decode sub_device_id requires the input shard grid to be contained in the "
+            "selected sub-device");
+    }
+
     CoreRange all_cores = shard_spec->grid.bounding_box();
     uint32_t num_cores_x = all_cores.grid_size().x;
     uint32_t num_cores_y = all_cores.grid_size().y;

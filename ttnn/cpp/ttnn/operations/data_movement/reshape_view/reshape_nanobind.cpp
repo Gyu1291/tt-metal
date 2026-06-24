@@ -27,9 +27,10 @@ ttnn::Tensor reshape_shape_vector_wrapper(
     const std::optional<PadValue>& pad_value,
     const ttnn::TileReshapeMapMode reshape_tile_mode,
     const std::optional<CoreRangeSet>& sub_core_grids,
-    const bool skip_padding_fill) {
+    const bool skip_padding_fill,
+    const std::optional<tt::tt_metal::SubDeviceId>& sub_device_id) {
     return ttnn::reshape(
-        input_tensor, shape, memory_config, pad_value, reshape_tile_mode, sub_core_grids, skip_padding_fill);
+        input_tensor, shape, memory_config, pad_value, reshape_tile_mode, sub_core_grids, skip_padding_fill, sub_device_id);
 }
 
 void bind_reshape_view_operation(nb::module_& mod) {
@@ -47,6 +48,7 @@ void bind_reshape_view_operation(nb::module_& mod) {
                 * :attr:`pad_value` (number): Value to pad the output tensor. Default is 0
                 * :attr:`reshape_tile_mode` (TileReshapeMapMode): Advanced option. Set to RECREATE to recompute and reallocate the mapping tensor. This may alleviate DRAM fragmentation but is slow. Default is CACHE. This keyword is named :attr:`reshape_tile_mode` on all overloads; the small-vector (tuple/list) shape overload previously used the name ``recreate_mapping_tensor`` for the same option—update callers to ``reshape_tile_mode``.
                 * :attr:`sub_core_grids` (CoreRangeSet, optional): Specifies sub-core grid ranges for advanced core selection control. Default uses all the cores in the device.
+                * :attr:`sub_device_id` (SubDeviceId, optional): Sub-device whose TENSIX worker cores should run the operation. Mutually exclusive with sub_core_grids. Defaults to None.
                 * :attr:`skip_padding_fill` (bool): If False, ``pad_value`` is applied to tile padding lanes. If True, ``pad_value`` is ignored and tile padding is left as-is. Default is False. Note: this option is silently ignored for ``BFLOAT8_B`` outputs because the BF8 typecast computes a shared exponent across each 16-element sub-block, and unfilled padding would corrupt logical values in straddling sub-blocks; the fill always runs in that case.
 
 
@@ -67,7 +69,8 @@ void bind_reshape_view_operation(nb::module_& mod) {
                 const std::optional<PadValue>&,
                 TileReshapeMapMode,
                 const std::optional<CoreRangeSet>&,
-                bool>(&ttnn::reshape),
+                bool,
+                const std::optional<tt::tt_metal::SubDeviceId>&>(&ttnn::reshape),
             nb::arg("input_tensor"),
             nb::arg("shape"),
             nb::kw_only(),
@@ -75,7 +78,8 @@ void bind_reshape_view_operation(nb::module_& mod) {
             nb::arg("pad_value") = nb::none(),
             nb::arg("reshape_tile_mode") = nb::cast(ttnn::TileReshapeMapMode::CACHE),
             nb::arg("sub_core_grids") = nb::none(),
-            nb::arg("skip_padding_fill") = false),
+            nb::arg("skip_padding_fill") = false,
+            nb::arg("sub_device_id") = nb::none()),
 
         // Overload 2: logical_shape and padded_shape (ttnn::Shape, ttnn::Shape)
         ttnn::overload_t(
@@ -87,7 +91,8 @@ void bind_reshape_view_operation(nb::module_& mod) {
                 const std::optional<PadValue>&,
                 TileReshapeMapMode,
                 const std::optional<CoreRangeSet>&,
-                bool>(&ttnn::reshape),
+                bool,
+                const std::optional<tt::tt_metal::SubDeviceId>&>(&ttnn::reshape),
             nb::arg("input_tensor"),
             nb::arg("logical_shape"),
             nb::arg("padded_shape"),
@@ -96,7 +101,8 @@ void bind_reshape_view_operation(nb::module_& mod) {
             nb::arg("pad_value") = nb::none(),
             nb::arg("reshape_tile_mode") = nb::cast(ttnn::TileReshapeMapMode::CACHE),
             nb::arg("sub_core_grids") = nb::none(),
-            nb::arg("skip_padding_fill") = false),
+            nb::arg("skip_padding_fill") = false,
+            nb::arg("sub_device_id") = nb::none()),
 
         // Overload 3: shape vector (SmallVector<int32_t>)
         ttnn::overload_t(
@@ -108,7 +114,8 @@ void bind_reshape_view_operation(nb::module_& mod) {
             nb::arg("pad_value") = nb::none(),
             nb::arg("reshape_tile_mode") = nb::cast(ttnn::TileReshapeMapMode::CACHE),
             nb::arg("sub_core_grids") = nb::none(),
-            nb::arg("skip_padding_fill") = false));
+            nb::arg("skip_padding_fill") = false,
+            nb::arg("sub_device_id") = nb::none()));
 }
 
 }  // namespace detail
